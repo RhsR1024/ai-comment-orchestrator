@@ -59,6 +59,7 @@ pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_get_diff_tool_settings",
     "commenter_update_diff_tool_settings",
     "commenter_list_dir",
+    "commenter_get_candidate_text",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +228,14 @@ impl CommenterCommandSurface {
         }
     }
 
+    pub fn data_root(&self) -> PathBuf {
+        self.state
+            .lock()
+            .expect("state lock poisoned")
+            .data_root
+            .clone()
+    }
+
     pub fn upsert_project_profile(
         &self,
         request: CommenterProjectProfileDraft,
@@ -335,6 +344,40 @@ impl CommenterCommandSurface {
         });
 
         Ok(entries)
+    }
+
+    pub fn get_candidate_text(&self, run_key: &str, relative_path: &str) -> Result<String, String> {
+        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&self.data_root(), run_key)
+            .map_err(|e| e.to_string())?;
+        let candidate_path = run_paths
+            .candidate_root
+            .join(relative_path)
+            .with_file_name(format!(
+                "{}.candidate",
+                std::path::Path::new(relative_path)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("artifact")
+            ));
+
+        let canonical_root = run_paths
+            .candidate_root
+            .canonicalize()
+            .unwrap_or_else(|_| run_paths.candidate_root.clone());
+        let canonical_target = match candidate_path.canonicalize() {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(error) => return Err(error.to_string()),
+        };
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err("candidate path escapes run root".to_string());
+        }
+
+        match std::fs::read_to_string(&canonical_target) {
+            Ok(content) => Ok(content),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     pub fn enqueue_run(
@@ -2027,6 +2070,16 @@ pub fn commenter_list_dir(
     surface.list_dir(&profile_key, &relative_path)
 }
 
+#[cfg(not(test))]
+#[tauri::command]
+pub fn commenter_get_candidate_text(
+    surface: tauri::State<'_, CommenterCommandSurface>,
+    run_key: String,
+    relative_path: String,
+) -> Result<String, String> {
+    surface.get_candidate_text(&run_key, &relative_path)
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -2541,5 +2594,38 @@ data: [DONE]\n\n"
             "path traversal must be rejected, got {:?}",
             outcome
         );
+    }
+
+    #[test]
+    fn get_candidate_text_returns_artifact_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_root = temp.path().join(".commenter-data");
+        let service = CommenterCommandSurface::new(&data_root);
+
+        let run_key = "demo-run";
+        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&data_root, run_key)
+            .expect("run paths");
+        run_paths.create_directories().expect("mkdirs");
+
+        let candidate_path = run_paths.candidate_root.join("src").join("a.ts.candidate");
+        std::fs::create_dir_all(candidate_path.parent().unwrap()).unwrap();
+        std::fs::write(&candidate_path, "// generated\nexport {};\n").unwrap();
+
+        let text = service
+            .get_candidate_text(run_key, "src/a.ts")
+            .expect("read candidate");
+        assert!(text.contains("// generated"));
+    }
+
+    #[test]
+    fn get_candidate_text_returns_empty_when_artifact_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_root = temp.path().join(".commenter-data");
+        let service = CommenterCommandSurface::new(&data_root);
+
+        let text = service
+            .get_candidate_text("nonexistent-run", "missing/file.ts")
+            .expect("missing artifact returns Ok");
+        assert_eq!(text, "");
     }
 }
