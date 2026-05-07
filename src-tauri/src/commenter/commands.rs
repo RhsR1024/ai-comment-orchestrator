@@ -58,6 +58,7 @@ pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_update_app_settings",
     "commenter_get_diff_tool_settings",
     "commenter_update_diff_tool_settings",
+    "commenter_list_dir",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
