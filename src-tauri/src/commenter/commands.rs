@@ -360,10 +360,11 @@ impl CommenterCommandSurface {
                     .unwrap_or("artifact")
             ));
 
-        let canonical_root = run_paths
-            .candidate_root
-            .canonicalize()
-            .unwrap_or_else(|_| run_paths.candidate_root.clone());
+        let canonical_root = match run_paths.candidate_root.canonicalize() {
+            Ok(value) => value,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(error) => return Err(error.to_string()),
+        };
         let canonical_target = match candidate_path.canonicalize() {
             Ok(value) => value,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
