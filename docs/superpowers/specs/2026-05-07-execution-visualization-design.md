@@ -187,7 +187,7 @@ Event-to-slice mapping (added inside `appendExecutionEvent`):
 | Command | Signature | Behavior |
 | --- | --- | --- |
 | `commenter_list_dir` | `(profile_key: String, relative_path: String) -> Result<Vec<DirEntry>, String>` | Looks up the profile by `profile_key`, then reads one level under `profile.root_path/relative_path`. Filters entries against `profile.exclude_directories`. Canonicalizes the resolved path; refuses if it escapes `root_path`. Returns `Vec<{ name, kind: 'dir' \| 'file', relative_path }>`. Returns `Err` if `profile_key` is unknown. |
-| `commenter_get_candidate_text` | `(run_key: String, relative_path: String) -> Result<String, String>` | Reads `<artifacts>/<run_key>/<relative_path>.candidate.txt`. Returns `Ok("")` when the artifact does not exist (so the UI shows a placeholder rather than an error). Other IO errors surface as `Err`. |
+| `commenter_get_candidate_text` | `(run_key: String, relative_path: String) -> Result<String, String>` | Resolves to `<data_root>/commenter/runs/<run_key>/candidates/<relative_path>.candidate` (matches existing `artifact_output_path(...".candidate")` layout). Returns `Ok("")` when the artifact does not exist (so the UI shows a placeholder rather than an error). Other IO errors surface as `Err`. |
 
 Both commands are read-only and do not touch SQLite.
 
