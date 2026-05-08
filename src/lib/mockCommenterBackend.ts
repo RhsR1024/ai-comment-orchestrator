@@ -39,7 +39,8 @@ function defaultDatabase(): MockDatabase {
     },
     app_settings: {
       global_max_workers: 2,
-      api_concurrency_limit: 2
+      api_concurrency_limit: 2,
+      api_bearer_token: ''
     },
     diff_tool_settings: {
       command_template: 'code --diff "{before}" "{after}"'
@@ -66,7 +67,9 @@ function loadDatabase(): MockDatabase {
     return database;
   }
 
-  return JSON.parse(raw) as MockDatabase;
+  const database = JSON.parse(raw) as MockDatabase;
+  database.app_settings.api_bearer_token ??= '';
+  return database;
 }
 
 function saveDatabase(database: MockDatabase) {
@@ -185,8 +188,12 @@ function deriveRunTerminalStatus(run: CommenterRunRecord): CommenterRunRecord['s
   return 'completed';
 }
 
-function isBadCredential(profile: CommenterProjectProfileView): boolean {
-  return profile.settings.credential_profile_key.toLowerCase().includes('bad');
+function isMissingCredential(database: MockDatabase): boolean {
+  return database.app_settings.api_bearer_token.trim().length === 0;
+}
+
+function isBadCredential(database: MockDatabase): boolean {
+  return database.app_settings.api_bearer_token.toLowerCase().includes('bad');
 }
 
 function processRunDetail(database: MockDatabase, detail: CommenterRunDetail) {
@@ -214,7 +221,7 @@ function processRunDetail(database: MockDatabase, detail: CommenterRunDetail) {
     detail.run.current_file = job.relative_path;
     job.status = 'requesting';
 
-    if (isBadCredential(profile)) {
+    if (isMissingCredential(database) || isBadCredential(database)) {
       if (job.retry_count < detail.run.max_retries) {
         job.retry_count += 1;
         job.status = 'retry_waiting';
@@ -554,7 +561,8 @@ export const mockCommenterBackend = {
     const database = loadDatabase();
     database.app_settings = {
       global_max_workers: Math.max(1, request.global_max_workers),
-      api_concurrency_limit: Math.max(1, request.api_concurrency_limit)
+      api_concurrency_limit: Math.max(1, request.api_concurrency_limit),
+      api_bearer_token: request.api_bearer_token
     };
     saveDatabase(database);
     return { ...database.app_settings };
@@ -574,6 +582,23 @@ export const mockCommenterBackend = {
     return { ...database.diff_tool_settings };
   },
 
-  listDir: async (_profile_key: string, _relative_path: string): Promise<CommenterDirEntry[]> => [],
-  getCandidateText: async (_run_key: string, _relative_path: string): Promise<string> => ''
+  listDir: async (_profile_key: string, _relative_path: string): Promise<CommenterDirEntry[]> => {
+    void _profile_key;
+    void _relative_path;
+    return [];
+  },
+  getCandidateText: async (_run_key: string, _relative_path: string): Promise<string> => {
+    void _run_key;
+    void _relative_path;
+    return '';
+  },
+  getDataPaths: async () => ({
+    data_root: '',
+    artifacts_root: '',
+    database_path: '',
+    state_snapshot_path: ''
+  }),
+  openPath: async (_path: string): Promise<void> => {
+    void _path;
+  }
 };

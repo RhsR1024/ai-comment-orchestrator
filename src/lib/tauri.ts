@@ -1,4 +1,5 @@
 import type {
+  CommenterDataPaths,
   CommenterDiffToolSettings,
   CommenterDirEntry,
   CommenterEnqueueRunRequest,
@@ -48,7 +49,8 @@ export async function pickProjectRootPath(currentPath = ''): Promise<string | nu
 }
 
 export async function subscribeCommenterEvents(
-  handler: (payload: CommenterEventPayload) => void
+  // eslint-disable-next-line no-unused-vars
+  handler: (...args: [CommenterEventPayload]) => void
 ): Promise<() => void> {
   if (!hasTauriRuntime()) {
     return () => undefined;
@@ -205,5 +207,18 @@ export const commenterApi = {
       });
     }
     return mockCommenterBackend.getCandidateText(run_key, relative_path);
+  },
+  getDataPaths: async (): Promise<CommenterDataPaths> => {
+    if (hasTauriRuntime()) {
+      return tauriInvoke<CommenterDataPaths>('commenter_get_data_paths');
+    }
+    return mockCommenterBackend.getDataPaths();
+  },
+  openPath: async (path: string): Promise<void> => {
+    if (hasTauriRuntime()) {
+      await tauriInvoke<void>('commenter_open_path', { path });
+      return;
+    }
+    await mockCommenterBackend.openPath(path);
   }
 };

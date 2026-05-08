@@ -1,2 +1,13 @@
+pub mod artifacts;
+pub mod commands;
+pub mod config;
 pub mod db;
+pub mod events;
+pub mod http;
 pub mod models;
+pub mod prompt;
+pub mod rollback;
+pub mod scanner;
+pub mod scheduler;
+pub mod sse;
+pub mod validate;

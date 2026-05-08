@@ -103,3 +103,12 @@ export function applyEventToStreamSlices(
       return current;
   }
 }
+
+export function rebuildStreamSlices(events: CommenterEventPayload[]): Map<string, LiveStreamSlice> {
+  return [...events]
+    .sort((left, right) => left.created_at - right.created_at)
+    .reduce(
+      (current, event) => applyEventToStreamSlices(current, event),
+      new Map<string, LiveStreamSlice>()
+    );
+}

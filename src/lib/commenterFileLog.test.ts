@@ -99,4 +99,17 @@ assert.deepEqual(buildFileLogEntries([], []), []);
   assert.equal(result[0].relative_path, 'src/a.ts');
 }
 
+// 6. phase messages are retained for request/response debugging
+{
+  const result = buildFileLogEntries(
+    [job('src/a.ts', 'done')],
+    [
+      event('request_started', 'src/a.ts', 100, 'POST /v2/chat/completions request artifact saved'),
+      event('model_response_completed', 'src/a.ts', 120, 'HTTP 200 response artifact saved')
+    ]
+  );
+  assert.equal(result[0].phases[0].message, 'POST /v2/chat/completions request artifact saved');
+  assert.equal(result[0].phases[1].message, 'HTTP 200 response artifact saved');
+}
+
 console.log('commenter file log PASSED');

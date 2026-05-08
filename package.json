@@ -1,0 +1,40 @@
+{
+  "name": "ai-comment-orchestrator",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "check": "vue-tsc --noEmit && pnpm run smoke",
+    "lint": "eslint .",
+    "smoke": "tsx src/lib/commenterApiShape.test.ts && tsx src/lib/commenterRoute.test.ts && tsx src/lib/commenterLocale.test.ts && tsx src/lib/commenterProfileDefaults.test.ts && tsx src/lib/commenterCredentialPanel.test.ts && tsx src/lib/settingsWorkspaceCleanup.test.ts && tsx src/lib/settingsWorkspaceEnhancements.test.ts && tsx src/lib/referenceStyleLayout.test.ts && tsx src/lib/commenterExecutionLog.test.ts && tsx src/lib/commenterFileLog.test.ts && tsx src/lib/commenterStoreEvents.test.ts && tsx src/lib/commenterStreamSlice.test.ts && tsx src/lib/commenterRunHeader.test.ts && tsx src/lib/commenterWorkspaceTree.test.ts && tsx src/lib/commenterStreamPanel.test.ts",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build --no-bundle",
+    "tauri:exe": "tauri build --no-bundle"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "lucide-vue-next": "^0.542.0",
+    "vue": "^3.5.22",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@tauri-apps/cli": "^2.11.1",
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.46.3",
+    "@typescript-eslint/parser": "^8.46.3",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-vue": "^10.5.1",
+    "globals": "^16.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.1",
+    "vue-eslint-parser": "^10.2.0",
+    "vue-tsc": "^3.1.1"
+  }
+}

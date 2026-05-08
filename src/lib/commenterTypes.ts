@@ -49,7 +49,6 @@ export type CommenterEventKind =
   | 'external_diff_opened';
 
 export interface CommenterProjectSettings {
-  credential_profile_key: string;
   default_run_mode: CommenterRunMode;
   default_max_workers: number;
   default_max_retries: number;
@@ -58,7 +57,6 @@ export interface CommenterProjectSettings {
   json_handling_strategy: CommenterJsonHandlingStrategy;
   api_base_url: string;
   api_model: string;
-  api_bearer_token: string;
   request_timeout_secs: number;
 }
 
@@ -161,6 +159,14 @@ export interface CommenterDiffToolSettings {
 export interface CommenterRunSettingsView {
   global_max_workers: number;
   api_concurrency_limit: number;
+  api_bearer_token: string;
+}
+
+export interface CommenterDataPaths {
+  data_root: string;
+  artifacts_root: string;
+  database_path: string;
+  state_snapshot_path: string;
 }
 
 export type CommenterDirEntryKind = 'dir' | 'file';

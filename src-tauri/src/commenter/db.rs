@@ -1,13 +1,24 @@
+use std::{fs, path::Path};
+
 use rusqlite::{Connection, OptionalExtension, Result as SqlResult};
 
 use super::models::{
     COMMENT_CREDENTIAL_SOURCE_KIND_VALUES, COMMENT_JOB_STATUS_VALUES, COMMENT_RUN_STATUS_VALUES,
 };
 
-const COMMENTER_SCHEMA_VERSION: i64 = 7;
+const COMMENTER_SCHEMA_VERSION: i64 = 8;
+pub const COMMENTER_DB_FILE_NAME: &str = "app.db";
 
 pub fn open_in_memory() -> SqlResult<Connection> {
     let conn = Connection::open_in_memory()?;
+    migrate(&conn)?;
+    Ok(conn)
+}
+
+pub fn open_app_database(data_root: &Path) -> SqlResult<Connection> {
+    fs::create_dir_all(data_root)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let conn = Connection::open(data_root.join(COMMENTER_DB_FILE_NAME))?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -109,26 +120,43 @@ fn ensure_app_settings_table(conn: &Connection) -> SqlResult<()> {
             id                      INTEGER PRIMARY KEY CHECK (id = 1),
             global_max_workers      INTEGER NOT NULL DEFAULT 1,
             api_concurrency_limit   INTEGER NOT NULL DEFAULT 1,
+            api_bearer_token        TEXT NOT NULL DEFAULT '',
             created_at              INTEGER NOT NULL DEFAULT 0,
             updated_at              INTEGER NOT NULL DEFAULT 0
         );
+        "#,
+    )?;
 
+    if !table_has_column(conn, "commenter_app_settings", "api_bearer_token")? {
+        conn.execute(
+            "ALTER TABLE commenter_app_settings ADD COLUMN api_bearer_token TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+
+    conn.execute_batch(
+        r#"
         INSERT INTO commenter_app_settings (
             id,
             global_max_workers,
             api_concurrency_limit,
+            api_bearer_token,
             created_at,
             updated_at
         )
-        VALUES (1, 1, 1, 0, 0)
+        VALUES (1, 1, 1, '', 0, 0)
         ON CONFLICT(id) DO NOTHING;
         "#,
-    )
+    )?;
+
+    Ok(())
 }
 
 fn ensure_credential_profiles_table(conn: &Connection) -> SqlResult<()> {
     let Some(sql) = table_sql(conn, "commenter_credential_profiles")? else {
-        conn.execute_batch(&credential_profiles_table_sql("commenter_credential_profiles"))?;
+        conn.execute_batch(&credential_profiles_table_sql(
+            "commenter_credential_profiles",
+        ))?;
         return Ok(());
     };
 
@@ -194,18 +222,17 @@ fn ensure_file_jobs_table(conn: &Connection) -> SqlResult<()> {
 }
 
 fn credential_profiles_schema_is_current(conn: &Connection, sql: &str) -> SqlResult<bool> {
-    Ok(table_has_column(
-        conn,
-        "commenter_credential_profiles",
-        "profile_key",
-    )? && table_has_column(conn, "commenter_credential_profiles", "display_name")?
-        && table_has_column(conn, "commenter_credential_profiles", "source_kind")?
-        && table_has_column(conn, "commenter_credential_profiles", "source_reference")?
-        && !table_has_column(conn, "commenter_credential_profiles", "inline_secret")?
-        && sql_supports_all_values(sql, COMMENT_CREDENTIAL_SOURCE_KIND_VALUES)
-        && sql.contains("profile_key")
-        && sql.contains("UNIQUE")
-        && sql.contains("source_reference        TEXT NOT NULL"))
+    Ok(
+        table_has_column(conn, "commenter_credential_profiles", "profile_key")?
+            && table_has_column(conn, "commenter_credential_profiles", "display_name")?
+            && table_has_column(conn, "commenter_credential_profiles", "source_kind")?
+            && table_has_column(conn, "commenter_credential_profiles", "source_reference")?
+            && !table_has_column(conn, "commenter_credential_profiles", "inline_secret")?
+            && sql_supports_all_values(sql, COMMENT_CREDENTIAL_SOURCE_KIND_VALUES)
+            && sql.contains("profile_key")
+            && sql.contains("UNIQUE")
+            && sql.contains("source_reference        TEXT NOT NULL"),
+    )
 }
 
 fn queue_runs_schema_is_current(conn: &Connection, sql: &str) -> SqlResult<bool> {
@@ -220,9 +247,8 @@ fn queue_runs_schema_is_current(conn: &Connection, sql: &str) -> SqlResult<bool>
 
 fn file_jobs_schema_is_current(_conn: &Connection, sql: &str) -> SqlResult<bool> {
     Ok(sql_supports_all_values(sql, COMMENT_JOB_STATUS_VALUES)
-        && sql.contains(
-            "FOREIGN KEY(run_id) REFERENCES commenter_queue_runs(id) ON DELETE CASCADE",
-        )
+        && sql
+            .contains("FOREIGN KEY(run_id) REFERENCES commenter_queue_runs(id) ON DELETE CASCADE")
         && sql.contains("UNIQUE(run_id, relative_path)"))
 }
 
@@ -237,15 +263,12 @@ fn rebuild_credential_profiles_table(conn: &Connection) -> SqlResult<()> {
         return Err(rusqlite::Error::InvalidQuery);
     }
 
-    let source_reference_expr = if table_has_column(
-        conn,
-        "commenter_credential_profiles",
-        "source_reference",
-    )? {
-        "COALESCE(source_reference, '')"
-    } else {
-        "''"
-    };
+    let source_reference_expr =
+        if table_has_column(conn, "commenter_credential_profiles", "source_reference")? {
+            "COALESCE(source_reference, '')"
+        } else {
+            "''"
+        };
 
     run_rebuild_migration(
         conn,
@@ -503,17 +526,15 @@ fn set_schema_version(conn: &Connection, version: i64) -> SqlResult<()> {
 #[cfg(test)]
 mod tests {
     use crate::commenter::models::{
-        CommentProjectSettings, CommentRunMode, CommentRunSettingsSnapshot,
-        JsonHandlingStrategy,
+        CommentProjectSettings, CommentRunMode, CommentRunSettingsSnapshot, JsonHandlingStrategy,
     };
     use rusqlite::{Connection, Result};
 
     use super::*;
 
     fn list_table_names(conn: &Connection) -> Result<Vec<String>> {
-        let mut stmt = conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name ASC",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect()
     }
@@ -626,7 +647,14 @@ mod tests {
             "INSERT INTO commenter_artifacts (
                 run_id, file_job_id, kind, storage_path, byte_size, created_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            (1_i64, 1_i64, "model_response", "runs/run-artifact/response/1.json", 128_i64, 1_i64),
+            (
+                1_i64,
+                1_i64,
+                "model_response",
+                "runs/run-artifact/response/1.json",
+                128_i64,
+                1_i64,
+            ),
         )
         .expect("insert artifact");
 
@@ -666,6 +694,10 @@ mod tests {
         assert!(tables.contains(&"commenter_app_settings".to_string()));
         assert!(tables.contains(&"commenter_credential_profiles".to_string()));
 
+        let app_settings_columns =
+            list_column_names(&conn, "commenter_app_settings").expect("app settings columns");
+        assert!(app_settings_columns.contains(&"api_bearer_token".to_string()));
+
         let credential_profile_columns = list_column_names(&conn, "commenter_credential_profiles")
             .expect("credential profile columns");
         assert!(credential_profile_columns.contains(&"profile_key".to_string()));
@@ -701,6 +733,10 @@ mod tests {
             default_max_files: 50,
             allow_light_rewrite: true,
             json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
+            api_base_url: "https://example.com".to_string(),
+            api_model: "glm-5.0".to_string(),
+            api_bearer_token: String::new(),
+            request_timeout_secs: 600,
         })
         .expect("encode project settings");
 
@@ -769,18 +805,26 @@ mod tests {
                 .expect("stored project settings"),
         )
         .expect("decode project settings");
-        let decoded_run_settings: CommentRunSettingsSnapshot = serde_json::from_str(
-            stored_run_settings.as_deref().expect("stored run settings"),
-        )
-        .expect("decode run settings");
+        let decoded_run_settings: CommentRunSettingsSnapshot =
+            serde_json::from_str(stored_run_settings.as_deref().expect("stored run settings"))
+                .expect("decode run settings");
 
         assert_eq!(
             stored_project_settings.as_deref(),
             Some(project_settings_json.as_str())
         );
-        assert_eq!(stored_run_settings.as_deref(), Some(run_settings_json.as_str()));
-        assert_eq!(decoded_project_settings.credential_profile_key, "default-openai");
-        assert_eq!(decoded_run_settings.credential_profile_key, "default-openai");
+        assert_eq!(
+            stored_run_settings.as_deref(),
+            Some(run_settings_json.as_str())
+        );
+        assert_eq!(
+            decoded_project_settings.credential_profile_key,
+            "default-openai"
+        );
+        assert_eq!(
+            decoded_run_settings.credential_profile_key,
+            "default-openai"
+        );
         assert!(!stored_project_settings
             .as_deref()
             .unwrap_or_default()
@@ -800,33 +844,37 @@ mod tests {
     }
 
     #[test]
-    fn app_settings_round_trip_as_global_limits_row() {
+    fn app_settings_round_trip_as_global_limits_and_token_row() {
         let conn = open_in_memory().expect("in-memory db");
 
         conn.execute(
             "UPDATE commenter_app_settings
-             SET global_max_workers = ?1, api_concurrency_limit = ?2, updated_at = ?3
+             SET global_max_workers = ?1,
+                 api_concurrency_limit = ?2,
+                 api_bearer_token = ?3,
+                 updated_at = ?4
              WHERE id = 1",
-            (12_i64, 6_i64, 9_i64),
+            (12_i64, 6_i64, "Bearer global-token", 9_i64),
         )
         .expect("update app settings");
 
         let row = conn
             .query_row(
-                "SELECT global_max_workers, api_concurrency_limit, updated_at
+                "SELECT global_max_workers, api_concurrency_limit, api_bearer_token, updated_at
                  FROM commenter_app_settings WHERE id = 1",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 },
             )
             .expect("select app settings");
 
-        assert_eq!(row, (12, 6, 9));
+        assert_eq!(row, (12, 6, "Bearer global-token".to_string(), 9));
     }
 
     #[test]
@@ -935,7 +983,10 @@ mod tests {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .expect("select migrated statuses");
-        assert_eq!(migrated_statuses, ("completed".to_string(), "writing".to_string()));
+        assert_eq!(
+            migrated_statuses,
+            ("completed".to_string(), "writing".to_string())
+        );
 
         conn.execute(
             "INSERT INTO commenter_queue_runs (
@@ -1010,7 +1061,10 @@ mod tests {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .expect("legacy credential row preserved");
-        assert_eq!(row, ("legacy-inline".to_string(), "secret-token".to_string()));
+        assert_eq!(
+            row,
+            ("legacy-inline".to_string(), "secret-token".to_string())
+        );
 
         let schema_version: String = conn
             .query_row(

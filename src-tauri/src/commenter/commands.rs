@@ -17,11 +17,12 @@ type AppHandle = ();
 
 use super::{
     artifacts::CommenterRunPaths,
-    config::resolve_bearer_token,
+    config::{describe_bearer_token_source, resolve_bearer_token},
     db::open_app_database,
     events::{emit_commenter_event, CommenterEventKind, CommenterEventPayload},
     http::{
-        call_chat_completions_with_observer, ChatCompletionsRequest, DEFAULT_API_BASE_URL,
+        build_chat_completions_request_debug, call_chat_completions_with_debug,
+        ChatCompletionsRequest, ChatCompletionsRequestContext, DEFAULT_API_BASE_URL,
         DEFAULT_API_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_REQUEST_TIMEOUT_SECS,
     },
     models::{
@@ -60,6 +61,8 @@ pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_update_diff_tool_settings",
     "commenter_list_dir",
     "commenter_get_candidate_text",
+    "commenter_get_data_paths",
+    "commenter_open_path",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +172,15 @@ pub struct CommenterDiffToolSettings {
 pub struct CommenterRunSettingsView {
     pub global_max_workers: i64,
     pub api_concurrency_limit: i64,
+    pub api_bearer_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommenterDataPaths {
+    pub data_root: String,
+    pub artifacts_root: String,
+    pub database_path: String,
+    pub state_snapshot_path: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -234,6 +246,19 @@ impl CommenterCommandSurface {
             .expect("state lock poisoned")
             .data_root
             .clone()
+    }
+
+    pub fn data_paths(&self) -> Result<CommenterDataPaths, String> {
+        let data_root = self.data_root();
+        let artifacts_root = data_root.join("commenter").join("runs");
+        let database_path = data_root.join(crate::commenter::db::COMMENTER_DB_FILE_NAME);
+        let state_snapshot_path = data_root.join(COMMENTER_STATE_FILE_NAME);
+        Ok(CommenterDataPaths {
+            data_root: data_root.to_string_lossy().into_owned(),
+            artifacts_root: artifacts_root.to_string_lossy().into_owned(),
+            database_path: database_path.to_string_lossy().into_owned(),
+            state_snapshot_path: state_snapshot_path.to_string_lossy().into_owned(),
+        })
     }
 
     pub fn upsert_project_profile(
@@ -349,36 +374,22 @@ impl CommenterCommandSurface {
     pub fn get_candidate_text(&self, run_key: &str, relative_path: &str) -> Result<String, String> {
         let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&self.data_root(), run_key)
             .map_err(|e| e.to_string())?;
-        let candidate_path = run_paths
-            .candidate_root
-            .join(relative_path)
-            .with_file_name(format!(
-                "{}.candidate",
-                std::path::Path::new(relative_path)
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("artifact")
-            ));
-
-        let canonical_root = match run_paths.candidate_root.canonicalize() {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-            Err(error) => return Err(error.to_string()),
-        };
-        let canonical_target = match candidate_path.canonicalize() {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-            Err(error) => return Err(error.to_string()),
-        };
-        if !canonical_target.starts_with(&canonical_root) {
-            return Err("candidate path escapes run root".to_string());
+        let candidate = read_artifact_text(
+            &run_paths.candidate_root,
+            relative_path,
+            ".candidate",
+            "candidate path escapes run root",
+        )?;
+        if !candidate.is_empty() {
+            return Ok(candidate);
         }
 
-        match std::fs::read_to_string(&canonical_target) {
-            Ok(content) => Ok(content),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-            Err(error) => Err(error.to_string()),
-        }
+        read_artifact_text(
+            &run_paths.sidecar_root,
+            relative_path,
+            ".commentary.txt",
+            "sidecar path escapes run root",
+        )
     }
 
     pub fn enqueue_run(
@@ -851,6 +862,7 @@ impl CommenterCommandSurface {
         Ok(CommenterRunSettingsView {
             global_max_workers: state.app_settings.global_max_workers,
             api_concurrency_limit: state.app_settings.api_concurrency_limit,
+            api_bearer_token: state.app_settings.api_bearer_token.clone(),
         })
     }
 
@@ -861,9 +873,11 @@ impl CommenterCommandSurface {
         let mut state = self.state.lock().map_err(|_| "state lock poisoned")?;
         state.app_settings.global_max_workers = request.global_max_workers.max(1);
         state.app_settings.api_concurrency_limit = request.api_concurrency_limit.max(1);
+        state.app_settings.api_bearer_token = request.api_bearer_token;
         let settings = CommenterRunSettingsView {
             global_max_workers: state.app_settings.global_max_workers,
             api_concurrency_limit: state.app_settings.api_concurrency_limit,
+            api_bearer_token: state.app_settings.api_bearer_token.clone(),
         };
         persist_locked_state(&state)?;
         Ok(settings)
@@ -985,6 +999,7 @@ impl CommenterCommandSurface {
                                     .unwrap_or_default(),
                             )
                             .cloned();
+                        let app_settings = state.app_settings.clone();
                         let stored_run = state
                             .runs
                             .get_mut(run_key)
@@ -1024,6 +1039,7 @@ impl CommenterCommandSurface {
                                 run_mode: stored_run.run.run_mode,
                                 run_key: run_key.to_string(),
                                 profile,
+                                app_settings,
                             };
                             persist_locked_state(&state)?;
                             Some((action, leased_payload))
@@ -1130,6 +1146,7 @@ fn default_state(data_root: PathBuf) -> CommenterState {
         app_settings: CommentAppSettings {
             global_max_workers: 2,
             api_concurrency_limit: 2,
+            api_bearer_token: String::new(),
         },
         diff_tool_settings: CommenterDiffToolSettings {
             command_template: "code --diff \"{before}\" \"{after}\"".to_string(),
@@ -1277,6 +1294,7 @@ struct JobAction {
     run_mode: CommentRunMode,
     run_key: String,
     profile: CommenterProjectProfileView,
+    app_settings: CommentAppSettings,
 }
 
 /// 单个文件流水线产出的结果，由调用方在持锁状态下回写到 StoredJob。
@@ -1364,7 +1382,7 @@ async fn process_single_job_async(
         WriteStrategy::AnnotateInPlace => {}
     }
 
-    let generated = generate_candidate(action, &source, app.as_ref()).await;
+    let generated = generate_candidate(action, &source, run_paths, app.as_ref()).await;
     let events = generated.events;
     let candidate = match generated.result {
         Ok(value) => value,
@@ -1454,12 +1472,23 @@ async fn process_single_job_async(
 async fn generate_candidate(
     action: &JobAction,
     source: &str,
+    run_paths: &CommenterRunPaths,
     app: Option<&AppHandle>,
 ) -> GeneratedCandidate {
     let settings = &action.profile.settings;
     let prompt_template = action.profile.prompt_template.as_str();
+    let app_settings = &action.app_settings;
+    let credential_source = match describe_bearer_token_source(app_settings) {
+        Ok(value) => value,
+        Err(error) => {
+            return GeneratedCandidate {
+                result: Err(format!("credential resolution failed: {error:?}")),
+                events: Vec::new(),
+            }
+        }
+    };
 
-    let bearer_token = match resolve_bearer_token(settings) {
+    let bearer_token = match resolve_bearer_token(app_settings) {
         Ok(token) => token,
         Err(error) => {
             return GeneratedCandidate {
@@ -1496,6 +1525,7 @@ async fn generate_candidate(
         settings.request_timeout_secs as u64
     };
 
+    let request_context = ChatCompletionsRequestContext::new(&base_url);
     let request = ChatCompletionsRequest {
         base_url,
         bearer_token,
@@ -1503,21 +1533,38 @@ async fn generate_candidate(
         system_prompt: parts.system,
         user_prompt: parts.user,
         max_tokens: DEFAULT_MAX_TOKENS,
-        temperature: 0.2,
+        temperature: 1.0,
         timeout_secs,
+        context: request_context,
     };
+    let request_debug = build_chat_completions_request_debug(&request);
+    let request_artifact_path =
+        artifact_output_path(&run_paths.request_root, &action.relative_path, ".request.json");
+    if let Err(error) = write_json_artifact(&request_artifact_path, &request_debug) {
+        return GeneratedCandidate {
+            result: Err(format!("write request artifact failed: {error}")),
+            events: Vec::new(),
+        };
+    }
+    let request_artifact_label = artifact_display_path(run_paths, &request_artifact_path);
+    let response_artifact_path =
+        artifact_output_path(&run_paths.response_root, &action.relative_path, ".response.json");
+    let response_artifact_label = artifact_display_path(run_paths, &response_artifact_path);
 
     let mut events = Vec::new();
     let request_started = job_event(
         action,
         CommenterEventKind::RequestStarted,
         EventLevel::Info,
-        format!("AI request started for {}", action.relative_path),
+        format!(
+            "AI request started via {credential_source} -> {}; request artifact: {request_artifact_label}",
+            request_debug.endpoint
+        ),
     );
     emit_commenter_event(app, &request_started);
     events.push(request_started);
 
-    let raw = call_chat_completions_with_observer(request, |piece| {
+    let outcome = call_chat_completions_with_debug(request, |piece| {
         let payload = job_event(
             action,
             CommenterEventKind::StreamChunk,
@@ -1528,22 +1575,37 @@ async fn generate_candidate(
         events.push(payload);
     })
     .await;
+    if let Err(error) = write_json_artifact(&response_artifact_path, &outcome.debug.response) {
+        return GeneratedCandidate {
+            result: Err(format!("write response artifact failed: {error}")),
+            events,
+        };
+    }
 
-    let raw = match raw {
+    let raw = match outcome.result {
         Ok(value) => value,
         Err(error) => {
             return GeneratedCandidate {
-                result: Err(error),
+                result: Err(format!("{error} (response artifact: {response_artifact_label})")),
                 events,
             }
         }
     };
+    let response_status = outcome
+        .debug
+        .response
+        .status
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     let completed = job_event(
         action,
         CommenterEventKind::ModelResponseCompleted,
         EventLevel::Info,
-        format!("AI response completed: {} characters", raw.chars().count()),
+        format!(
+            "AI response completed: {} characters (HTTP {response_status}); response artifact: {response_artifact_label}",
+            raw.chars().count()
+        ),
     );
     emit_commenter_event(app, &completed);
     events.push(completed);
@@ -1842,12 +1904,53 @@ fn artifact_output_path(root: &Path, relative_path: &str, suffix: &str) -> PathB
     path
 }
 
+fn read_artifact_text(
+    root: &Path,
+    relative_path: &str,
+    suffix: &str,
+    escape_error: &str,
+) -> Result<String, String> {
+    let artifact_path = artifact_output_path(root, relative_path, suffix);
+    let canonical_root = match root.canonicalize() {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let canonical_target = match artifact_path.canonicalize() {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(escape_error.to_string());
+    }
+
+    match std::fs::read_to_string(&canonical_target) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn artifact_display_path(run_paths: &CommenterRunPaths, artifact_path: &Path) -> String {
+    artifact_path
+        .strip_prefix(&run_paths.run_root)
+        .unwrap_or(artifact_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn write_with_parents(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("path has no parent: {}", path.display()))?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     fs::write(path, content).map_err(|error| error.to_string())
+}
+
+fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    write_with_parents(path, &content)
 }
 
 fn hash_content(content: &str) -> String {
@@ -2081,6 +2184,81 @@ pub fn commenter_get_candidate_text(
     surface.get_candidate_text(&run_key, &relative_path)
 }
 
+#[cfg(not(test))]
+#[tauri::command]
+pub fn commenter_get_data_paths(
+    surface: tauri::State<'_, CommenterCommandSurface>,
+) -> Result<CommenterDataPaths, String> {
+    surface.data_paths()
+}
+
+#[cfg(not(test))]
+#[tauri::command]
+pub fn commenter_open_path(
+    surface: tauri::State<'_, CommenterCommandSurface>,
+    path: String,
+) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    let data_root = surface.data_root();
+    let canonical_target = match target.canonicalize() {
+        Ok(value) => value,
+        Err(_) => {
+            // Target may not exist yet (e.g. artifacts dir created lazily). Create it
+            // when it lives under the managed data root, then re-canonicalize.
+            if target.starts_with(&data_root) {
+                std::fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+                target
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?
+            } else {
+                return Err(format!("path is outside the managed data root: {path}"));
+            }
+        }
+    };
+    let canonical_root = data_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(format!("path is outside the managed data root: {path}"));
+    }
+
+    let reveal_target: PathBuf = if canonical_target.is_dir() {
+        canonical_target.clone()
+    } else {
+        canonical_target
+            .parent()
+            .map(|value| value.to_path_buf())
+            .unwrap_or_else(|| canonical_target.clone())
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(reveal_target)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(reveal_target)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(reveal_target)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -2094,7 +2272,7 @@ mod tests {
     fn draft_with_api(
         root_path: &str,
         api_base_url: &str,
-        api_bearer_token: &str,
+        _api_bearer_token: &str,
     ) -> CommenterProjectProfileDraft {
         CommenterProjectProfileDraft {
             project_key: "demo".to_string(),
@@ -2113,10 +2291,20 @@ mod tests {
                 json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
                 api_base_url: api_base_url.to_string(),
                 api_model: "glm-5.0".to_string(),
-                api_bearer_token: api_bearer_token.to_string(),
+                api_bearer_token: String::new(),
                 request_timeout_secs: 600,
             },
         }
+    }
+
+    fn configure_global_api_token(service: &CommenterCommandSurface, api_bearer_token: &str) {
+        service
+            .update_app_settings(CommenterRunSettingsView {
+                global_max_workers: 2,
+                api_concurrency_limit: 2,
+                api_bearer_token: api_bearer_token.to_string(),
+            })
+            .expect("global api token");
     }
 
     fn spawn_sse_server(content: &'static str) -> String {
@@ -2216,6 +2404,7 @@ data: [DONE]\n\n"
 
         let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
         let api_base_url = spawn_sse_server("// main 入口函数\npackage main\nfunc main() {}\n");
+        configure_global_api_token(&service, "test-token");
         service
             .upsert_project_profile(draft_with_api(
                 project_root.to_string_lossy().as_ref(),
@@ -2262,6 +2451,7 @@ data: [DONE]\n\n"
 
         let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
         let api_base_url = spawn_sse_server("// main 入口函数\npackage main\nfunc main() {}\n");
+        configure_global_api_token(&service, "test-token");
         service
             .upsert_project_profile(draft_with_api(
                 project_root.to_string_lossy().as_ref(),
@@ -2368,6 +2558,7 @@ data: [DONE]\n\n"
         let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
         let (api_base_url, peak_in_flight) =
             spawn_counting_sse_server(2, 200, "// main 入口函数\npackage main\nfunc main() {}\n");
+        configure_global_api_token(&service, "test-token");
         service
             .upsert_project_profile(draft_with_api(
                 project_root.to_string_lossy().as_ref(),
@@ -2451,6 +2642,7 @@ data: [DONE]\n\n"
 
         let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
         let api_base_url = spawn_sse_server("// main comment\npackage main\nfunc main() {}\n");
+        configure_global_api_token(&service, "test-token");
         service
             .upsert_project_profile(draft_with_api(
                 project_root.to_string_lossy().as_ref(),
@@ -2489,6 +2681,77 @@ data: [DONE]\n\n"
             .any(|event| event.kind == CommenterEventKind::ModelResponseCompleted));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_run_writes_http_debug_artifacts_and_redacts_bearer_token() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(project_root.join("src")).expect("src dir");
+        fs::write(
+            project_root.join("src/main.go"),
+            "package main\nfunc main() {}\n",
+        )
+        .expect("go");
+
+        let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
+        let api_base_url = spawn_sse_server("// main comment\npackage main\nfunc main() {}\n");
+        configure_global_api_token(&service, "test-token-123456");
+        service
+            .upsert_project_profile(draft_with_api(
+                project_root.to_string_lossy().as_ref(),
+                &api_base_url,
+                "test-token-123456",
+            ))
+            .expect("profile");
+        let handle = service
+            .enqueue_run(CommenterEnqueueRunRequest {
+                profile_key: "demo".to_string(),
+                requested_by: Some("test".to_string()),
+                run_mode: CommentRunMode::Review,
+                max_workers: 1,
+                max_retries: 0,
+                max_files: 10,
+                allow_light_rewrite: true,
+                json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
+            })
+            .expect("run");
+
+        let detail = service
+            .start_run(None, &handle.run_key)
+            .await
+            .expect("start run");
+        let run_paths =
+            crate::commenter::artifacts::CommenterRunPaths::new(&service.data_root(), &handle.run_key)
+                .expect("run paths");
+        let request_artifact = run_paths
+            .request_root
+            .join("src")
+            .join("main.go.request.json");
+        let response_artifact = run_paths
+            .response_root
+            .join("src")
+            .join("main.go.response.json");
+
+        let request_raw = std::fs::read_to_string(&request_artifact).expect("request artifact");
+        let response_raw = std::fs::read_to_string(&response_artifact).expect("response artifact");
+
+        assert!(request_raw.contains("\"Authorization\""));
+        assert!(
+            !request_raw.contains("test-token-123456"),
+            "request artifact must redact raw bearer token"
+        );
+        assert!(response_raw.contains("\"status\": 200"));
+        assert!(response_raw.contains("text/event-stream"));
+        assert!(response_raw.contains("data: {"));
+        assert!(detail.events.iter().any(|event| {
+            event.kind == CommenterEventKind::RequestStarted
+                && event.message.contains("request artifact")
+        }));
+        assert!(detail.events.iter().any(|event| {
+            event.kind == CommenterEventKind::ModelResponseCompleted
+                && event.message.contains("response artifact")
+        }));
+    }
+
     #[test]
     fn command_surface_initializes_sqlite_app_database() {
         let temp = tempdir().expect("tempdir");
@@ -2507,7 +2770,7 @@ data: [DONE]\n\n"
                 |row| row.get(0),
             )
             .expect("schema version");
-        assert_eq!(version, "7");
+        assert_eq!(version, "8");
     }
 
     #[test]
@@ -2616,6 +2879,30 @@ data: [DONE]\n\n"
             .get_candidate_text(run_key, "src/a.ts")
             .expect("read candidate");
         assert!(text.contains("// generated"));
+    }
+
+    #[test]
+    fn get_candidate_text_falls_back_to_sidecar_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_root = temp.path().join(".commenter-data");
+        let service = CommenterCommandSurface::new(&data_root);
+
+        let run_key = "demo-run";
+        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&data_root, run_key)
+            .expect("run paths");
+        run_paths.create_directories().expect("mkdirs");
+
+        let sidecar_path = run_paths
+            .sidecar_root
+            .join("src")
+            .join("payload.json.commentary.txt");
+        std::fs::create_dir_all(sidecar_path.parent().unwrap()).unwrap();
+        std::fs::write(&sidecar_path, "sidecar preview\n").unwrap();
+
+        let text = service
+            .get_candidate_text(run_key, "src/payload.json")
+            .expect("read sidecar");
+        assert_eq!(text, "sidecar preview\n");
     }
 
     #[test]

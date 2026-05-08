@@ -20,7 +20,7 @@ export type PhaseTag =
 export interface FileLogEntry {
   relative_path: string;
   status: CommenterJobStatus;
-  phases: { phase: PhaseTag; at: number; level: CommenterEventLevel }[];
+  phases: { phase: PhaseTag; at: number; level: CommenterEventLevel; message: string }[];
   started_at: number | null;
   ended_at: number | null;
   error_message: string | null;
@@ -69,7 +69,12 @@ export function buildFileLogEntries(
       seen_first_chunk.add(event.relative_path);
     }
 
-    entry.phases.push({ phase, at: event.created_at, level: event.level });
+    entry.phases.push({
+      phase,
+      at: event.created_at,
+      level: event.level,
+      message: event.message
+    });
     if (entry.started_at === null) entry.started_at = event.created_at;
     entry.ended_at = event.created_at;
 

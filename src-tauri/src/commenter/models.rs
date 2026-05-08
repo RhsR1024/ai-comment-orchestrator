@@ -210,6 +210,8 @@ impl JsonHandlingStrategy {
 pub struct CommentAppSettings {
     pub global_max_workers: i64,
     pub api_concurrency_limit: i64,
+    #[serde(default)]
+    pub api_bearer_token: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +227,7 @@ pub struct CommentCredentialProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentProjectSettings {
+    #[serde(default)]
     pub credential_profile_key: String,
     pub default_run_mode: CommentRunMode,
     pub default_max_workers: i64,
@@ -232,6 +235,26 @@ pub struct CommentProjectSettings {
     pub default_max_files: i64,
     pub allow_light_rewrite: bool,
     pub json_handling_strategy: JsonHandlingStrategy,
+    #[serde(default = "default_api_base_url")]
+    pub api_base_url: String,
+    #[serde(default = "default_api_model")]
+    pub api_model: String,
+    #[serde(default)]
+    pub api_bearer_token: String,
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: i64,
+}
+
+pub fn default_api_base_url() -> String {
+    "https://unvcoding.copilot.qq.com".to_string()
+}
+
+pub fn default_api_model() -> String {
+    "glm-5.0".to_string()
+}
+
+pub fn default_request_timeout_secs() -> i64 {
+    600
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,8 +399,7 @@ mod tests {
             "rollback_failed",
         ];
 
-        let parsed: Vec<CommentRunStatus> =
-            serde_json::from_value(json!(approved)).expect("parse");
+        let parsed: Vec<CommentRunStatus> = serde_json::from_value(json!(approved)).expect("parse");
         let actual: Vec<&str> = parsed.into_iter().map(CommentRunStatus::as_str).collect();
         assert_eq!(actual, approved);
     }
@@ -398,8 +420,7 @@ mod tests {
             "rolled_back",
         ];
 
-        let parsed: Vec<CommentJobStatus> =
-            serde_json::from_value(json!(approved)).expect("parse");
+        let parsed: Vec<CommentJobStatus> = serde_json::from_value(json!(approved)).expect("parse");
         let actual: Vec<&str> = parsed.into_iter().map(CommentJobStatus::as_str).collect();
         assert_eq!(actual, approved);
     }
@@ -408,18 +429,19 @@ mod tests {
     fn app_settings_capture_global_limits() {
         let settings: CommentAppSettings = serde_json::from_value(json!({
             "global_max_workers": 12,
-            "api_concurrency_limit": 6
+            "api_concurrency_limit": 6,
+            "api_bearer_token": "Bearer test-token"
         }))
         .expect("parse app settings");
 
         assert_eq!(settings.global_max_workers, 12);
         assert_eq!(settings.api_concurrency_limit, 6);
+        assert_eq!(settings.api_bearer_token, "Bearer test-token");
     }
 
     #[test]
     fn project_settings_dto_captures_minimum_task_one_fields() {
         let settings: CommentProjectSettings = serde_json::from_value(json!({
-            "credential_profile_key": "team-default",
             "default_run_mode": "review",
             "default_max_workers": 4,
             "default_max_retries": 2,
@@ -429,7 +451,7 @@ mod tests {
         }))
         .expect("parse settings");
 
-        assert_eq!(settings.credential_profile_key, "team-default");
+        assert_eq!(settings.credential_profile_key, "");
         assert_eq!(settings.default_run_mode.as_str(), "review");
         assert_eq!(settings.default_max_workers, 4);
         assert_eq!(settings.default_max_retries, 2);
@@ -495,7 +517,10 @@ mod tests {
 
         let parsed: Vec<CommentArtifactKind> =
             serde_json::from_value(json!(approved)).expect("parse");
-        let actual: Vec<&str> = parsed.into_iter().map(CommentArtifactKind::as_str).collect();
+        let actual: Vec<&str> = parsed
+            .into_iter()
+            .map(CommentArtifactKind::as_str)
+            .collect();
         assert_eq!(actual, approved);
     }
 

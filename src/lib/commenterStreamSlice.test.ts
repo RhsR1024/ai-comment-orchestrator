@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   applyEventToStreamSlices,
+  rebuildStreamSlices,
   STREAM_SLICE_TEXT_CAP_BYTES,
   STREAM_SLICE_TEXT_KEEP_COUNT,
   type LiveStreamSlice
@@ -93,6 +94,19 @@ function key(path: string): string {
   const slice = map.get(key('big.ts'))!;
   assert.ok(slice.text.includes('truncated'), 'should contain truncation marker');
   assert.ok(!slice.text.includes('extra'), 'further chunks must be dropped');
+}
+
+// 7. rebuilding from persisted events restores stream history after reload
+{
+  const map = rebuildStreamSlices([
+    event('model_response_completed', 'b.ts', 40),
+    event('stream_chunk', 'b.ts', 30, 'world'),
+    event('request_started', 'b.ts', 10),
+    event('stream_chunk', 'b.ts', 20, 'hello ')
+  ]);
+  const slice = map.get(key('b.ts'))!;
+  assert.equal(slice.text, 'hello world');
+  assert.equal(slice.status, 'completed');
 }
 
 console.log('commenter stream slice PASSED');

@@ -26,6 +26,11 @@ vite.config.ts.timestamp-*.mjs
 build/
 .cache/
 *.log
+src-tauri/target/
+.commenter-data/
+artifacts/
+tmp-*.ps1
+test_truncation_edge.txt
 
 .superpowers/brainstorm/
 .trellis/tasks/
