@@ -2,7 +2,7 @@ import { createMemoryHistory, createRouter, createWebHistory } from 'vue-router'
 
 const history = typeof window === 'undefined' ? createMemoryHistory() : createWebHistory();
 const commenter_page = () => import('../pages/CommentOrchestratorPage.vue');
-type CommenterWorkspaceMode = 'project' | 'run' | 'global';
+type CommenterWorkspaceMode = 'project' | 'run' | 'review' | 'global';
 
 const router = createRouter({
   history,
@@ -35,6 +35,13 @@ const router = createRouter({
       component: commenter_page,
       props: {
         workspaceMode: 'run' satisfies CommenterWorkspaceMode
+      }
+    },
+    {
+      path: '/review',
+      component: commenter_page,
+      props: {
+        workspaceMode: 'review' satisfies CommenterWorkspaceMode
       }
     },
     {

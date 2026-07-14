@@ -36,7 +36,10 @@ assert.match(app, /app-shell--reference/, 'app shell should use the reference sh
 assert.match(sidebar, /sidebar-status-card/, 'sidebar should expose bottom API status');
 assert.match(sidebar, /sidebar-status-dot/, 'sidebar should render a colored API status dot');
 assert.match(sidebar, /go\('\/global'\)/, 'sidebar should link to the new /global route');
+assert.match(sidebar, /go\('\/review'\)/, 'sidebar should expose the review queue route');
 assert.match(page, /run-reference-shell/, 'run workspace should use the reference run shell');
+assert.match(page, /review-reference-shell/, 'review queue should have a dedicated workspace');
+assert.match(page, /<ReviewJobsPanel/, 'review workspace should render manual review actions');
 assert.doesNotMatch(styles, /radial-gradient/, 'reference shell should avoid decorative gradient backgrounds');
 assert.doesNotMatch(sidebar, /linear-gradient\(180deg, rgba\(95, 212, 204/, 'sidebar mark should be flat');
 assert.match(run_detail, /active_left_tab/, 'run detail must drive its left rail with a tab ref');
@@ -65,6 +68,26 @@ assert.match(
   styles,
   /\.queue-rail-control/,
   'run workspace rail dark control styles must live in shared styles'
+);
+assert.match(
+  styles,
+  /\.run-reference-shell\s*\{[^}]*height:\s*100vh;[^}]*overflow:\s*hidden;/s,
+  'run workspace should stay constrained to the viewport'
+);
+assert.match(
+  styles,
+  /\.run-stream-rail\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+  'stream rail should contain its own scrolling content'
+);
+assert.match(
+  styles,
+  /\.run-reference-shell \.stream-body[^}]*scrollbar-color:/s,
+  'stream content should use the shared dark scrollbar treatment'
+);
+assert.match(
+  styles,
+  /\.run-left-body[^}]*scrollbar-color:/s,
+  'run detail content should use the shared dark scrollbar treatment'
 );
 
 console.log('reference style layout PASSED');

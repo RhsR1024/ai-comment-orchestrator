@@ -214,7 +214,7 @@ export function createDefaultCommenterProjectProfileDraft(): CommenterProjectPro
       allow_light_rewrite: true,
       json_handling_strategy: 'sidecar_only',
       api_base_url: 'https://unvcoding.copilot.qq.com',
-      api_model: 'glm-5.0',
+      api_model: 'glm-5.1',
       request_timeout_secs: 600
     }
   };

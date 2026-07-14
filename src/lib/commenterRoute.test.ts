@@ -54,6 +54,7 @@ for (const path of ["'/settings'", "'/workspace'", "'/global'"]) {
 
 assert.match(router_source, /workspaceMode: 'project'/, 'project mode should be wired to /settings');
 assert.match(router_source, /workspaceMode: 'run'/, 'run mode should be wired to /workspace');
+assert.match(router_source, /workspaceMode: 'review'/, 'review mode should be wired to /review');
 assert.match(router_source, /workspaceMode: 'global'/, 'global mode should be wired to /global');
 
 const sidebar_source = fs.readFileSync(new URL('../components/Sidebar.vue', import.meta.url), 'utf8');

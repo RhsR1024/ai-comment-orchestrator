@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive } from 'vue';
+import { reactive, ref } from 'vue';
 import { FolderOpen, FolderPlus, RefreshCcw, Save } from 'lucide-vue-next';
 
 import { commenterStore } from '../../lib/commenterStore';
@@ -18,6 +18,8 @@ const props = withDefaults(
 );
 
 const draft = reactive<CommenterProjectProfileDraft>(createDefaultCommenterProjectProfileDraft());
+const save_state = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
+const save_error = ref<string | null>(null);
 
 function splitCommaSeparatedValues(raw: string): string[] {
   return raw
@@ -39,13 +41,21 @@ function mergedProjectKey(): string {
 
 async function submitProfile() {
   const profile_name = draft.profile_name.trim();
-  await commenterStore.saveProfile({
-    ...draft,
-    project_key: mergedProjectKey(),
-    profile_name,
-    include_extensions: [...draft.include_extensions],
-    exclude_directories: [...draft.exclude_directories]
-  });
+  save_state.value = 'saving';
+  save_error.value = null;
+  try {
+    await commenterStore.saveProfile({
+      ...draft,
+      project_key: mergedProjectKey(),
+      profile_name,
+      include_extensions: [...draft.include_extensions],
+      exclude_directories: [...draft.exclude_directories]
+    });
+    save_state.value = 'saved';
+  } catch (error) {
+    save_state.value = 'error';
+    save_error.value = error instanceof Error ? error.message : String(error);
+  }
 }
 </script>
 
@@ -171,10 +181,29 @@ async function submitProfile() {
       </label>
 
       <div class="button-row">
-        <button class="button" @click="submitProfile">
+        <button
+          class="button"
+          type="button"
+          :disabled="save_state === 'saving'"
+          @click="submitProfile"
+        >
           <Save :size="16" />
-          {{ t('commenter.createProfile') }}
+          {{ save_state === 'saving' ? t('commenter.save.saving') : t('commenter.createProfile') }}
         </button>
+        <span
+          v-if="save_state === 'saved'"
+          class="profile-save-feedback profile-save-feedback--ok"
+          role="status"
+        >
+          {{ t('commenter.save.success') }}
+        </span>
+        <span
+          v-else-if="save_state === 'error'"
+          class="profile-save-feedback profile-save-feedback--error"
+          role="alert"
+        >
+          {{ save_error ?? t('commenter.save.failed') }}
+        </span>
       </div>
 
       <div class="list profile-list">
@@ -219,6 +248,19 @@ async function submitProfile() {
 .profile-list {
   padding-top: 8px;
   border-top: 1px solid var(--aco-border);
+}
+
+.profile-save-feedback {
+  align-self: center;
+  font-size: 12px;
+}
+
+.profile-save-feedback--ok {
+  color: var(--aco-green);
+}
+
+.profile-save-feedback--error {
+  color: var(--aco-red);
 }
 
 .project-form-panel {

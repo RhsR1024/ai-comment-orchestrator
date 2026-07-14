@@ -11,11 +11,14 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::sse::is_sse_done_line;
+
 pub const CHAT_COMPLETIONS_PATH: &str = "/v2/chat/completions";
 pub const DEFAULT_API_BASE_URL: &str = "https://unvcoding.copilot.qq.com";
-pub const DEFAULT_API_MODEL: &str = "glm-5.0";
+pub const DEFAULT_API_MODEL: &str = "glm-5.1";
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_MAX_TOKENS: u32 = 48000;
+pub const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 60;
 
 const TEMPLATE_AGENT_INTENT: &str = "craft";
 const TEMPLATE_CONTENT_TYPE: &str = "application/json;charset=UTF-8";
@@ -33,8 +36,7 @@ const TEMPLATE_USER_ID: &str = "8bf9032d-e260-425a-b156-66316d141488";
 const TEMPLATE_ENTERPRISE_ID: &str = "unvcoding";
 const TEMPLATE_TENANT_ID: &str = "unvcoding";
 const TEMPLATE_DOMAIN: &str = "unvcoding.copilot.qq.com";
-const TEMPLATE_USER_AGENT: &str =
-    "JetBrainsGoLand/GO-253.29346.379 unvcoding/4.2.17133064";
+const TEMPLATE_USER_AGENT: &str = "JetBrainsGoLand/GO-253.29346.379 unvcoding/4.2.17133064";
 const TEMPLATE_PRODUCT: &str = "Cloud-Hosted";
 const TEMPLATE_REASONING_EFFORT: &str = "medium";
 const TEMPLATE_REASONING_SUMMARY: &str = "auto";
@@ -246,12 +248,21 @@ where
         let truncated: String = snippet.chars().take(512).collect();
         debug.response.body = snippet;
         return ChatCompletionsCallOutcome {
-            result: Err(format!("chat completions returned {}: {}", status, truncated)),
+            result: Err(format!(
+                "chat completions returned {}: {}",
+                status, truncated
+            )),
             debug,
         };
     }
 
-    let stream = accumulate_sse_stream(response, observer).await;
+    let stream_idle_timeout = Duration::from_secs(
+        request
+            .timeout_secs
+            .max(30)
+            .min(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
+    );
+    let stream = accumulate_sse_stream(response, observer, stream_idle_timeout).await;
     debug.response.body = stream.raw_body;
     ChatCompletionsCallOutcome {
         result: match stream.error {
@@ -341,7 +352,10 @@ fn request_headers(
         header("X-IDE-Name", TEMPLATE_IDE_NAME),
         header("X-IDE-Version", TEMPLATE_IDE_VERSION),
         header("X-Product-Version", TEMPLATE_PRODUCT_VERSION),
-        header("X-Request-Trace-Id", request.context.request_trace_id.clone()),
+        header(
+            "X-Request-Trace-Id",
+            request.context.request_trace_id.clone(),
+        ),
         header("X-Env-ID", TEMPLATE_ENV_ID),
         header(
             "X-User-Id",
@@ -561,6 +575,7 @@ fn hex_string(bytes: &[u8]) -> String {
 async fn accumulate_sse_stream<F>(
     response: reqwest::Response,
     mut observer: F,
+    idle_timeout: Duration,
 ) -> AccumulatedSseStream
 where
     F: FnMut(&str),
@@ -570,7 +585,23 @@ where
     let mut content = String::new();
     let mut raw_body = String::new();
 
-    while let Some(chunk) = stream.next().await {
+    'stream: loop {
+        let next_chunk = match tokio::time::timeout(idle_timeout, stream.next()).await {
+            Ok(value) => value,
+            Err(_) => {
+                return AccumulatedSseStream {
+                    content,
+                    raw_body,
+                    error: Some(format!(
+                        "sse stream idle timeout after {} seconds",
+                        idle_timeout.as_secs()
+                    )),
+                }
+            }
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
         let chunk = match chunk {
             Ok(value) => value,
             Err(error) => {
@@ -588,6 +619,9 @@ where
             let raw = buffer.drain(..=line_end).collect::<Vec<u8>>();
             let line = String::from_utf8_lossy(&raw);
             let line = line.trim_end_matches(['\r', '\n']);
+            if is_sse_done_line(line) {
+                break 'stream;
+            }
             if let Some(piece) = parse_sse_line(line).unwrap_or(None) {
                 observer(&piece);
                 content.push_str(&piece);
@@ -641,7 +675,12 @@ fn parse_sse_line(line: &str) -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use serde_json::json;
@@ -675,6 +714,27 @@ mod tests {
         format!("{header}.{payload}.signature")
     }
 
+    fn spawn_hanging_http_response(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept test request");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n{:X}\r\n{}\r\n",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .expect("write test response");
+            socket.flush().expect("flush test response");
+            thread::sleep(Duration::from_secs(1));
+        });
+        format!("http://{address}")
+    }
+
     #[test]
     fn endpoint_appends_api_path_once() {
         assert_eq!(
@@ -699,7 +759,49 @@ mod tests {
             None
         );
         assert_eq!(parse_sse_line("data: [DONE]").unwrap(), None);
+        assert!(is_sse_done_line("data: [DONE]"));
+        assert!(is_sse_done_line("data:[DONE]"));
+        assert!(!is_sse_done_line("data: {}"));
         assert_eq!(parse_sse_line("event: ping").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn done_marker_finishes_without_waiting_for_connection_close() {
+        let base_url = spawn_hanging_http_response(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\ndata: [DONE]\n\n",
+        );
+        let response = Client::new()
+            .get(base_url)
+            .send()
+            .await
+            .expect("send test request");
+
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(300),
+            accumulate_sse_stream(response, |_| {}, Duration::from_secs(5)),
+        )
+        .await
+        .expect("DONE should finish before the connection closes");
+
+        assert_eq!(outcome.content, "done");
+        assert_eq!(outcome.error, None);
+    }
+
+    #[tokio::test]
+    async fn idle_stream_returns_explicit_timeout_error() {
+        let base_url = spawn_hanging_http_response(": connected\n\n");
+        let response = Client::new()
+            .get(base_url)
+            .send()
+            .await
+            .expect("send test request");
+
+        let outcome = accumulate_sse_stream(response, |_| {}, Duration::from_millis(50)).await;
+
+        assert!(outcome
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("idle timeout")));
     }
 
     #[test]
@@ -720,7 +822,10 @@ mod tests {
         let debug = build_chat_completions_request_debug(&sample_request());
         let headers = header_map(&debug.headers);
 
-        assert_eq!(headers.get("Content-Type"), Some(&"application/json;charset=UTF-8"));
+        assert_eq!(
+            headers.get("Content-Type"),
+            Some(&"application/json;charset=UTF-8")
+        );
         assert_eq!(headers.get("accept"), Some(&"*/*"));
         assert_eq!(headers.get("X-Agent-Intent"), Some(&"craft"));
         assert_eq!(headers.get("X-Requested-With"), Some(&"XMLHttpRequest"));

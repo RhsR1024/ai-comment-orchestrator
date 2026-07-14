@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Box, Globe2, SquareActivity } from 'lucide-vue-next';
+import { Box, ClipboardCheck, Globe2, SquareActivity } from 'lucide-vue-next';
 
 import { commenterStore } from '../lib/commenterStore';
 import { use_messages } from '../locales/messages';
@@ -11,9 +11,9 @@ const router = useRouter();
 const { t } = use_messages();
 
 const profile_count = computed(() => commenterStore.state.profiles.length);
+const review_count = computed(() => commenterStore.state.review_jobs.length);
 const run_attention_count = computed(
   () =>
-    commenterStore.state.review_jobs.length +
     commenterStore.state.runs.filter((run) => !run.finished_at).length
 );
 
@@ -70,6 +70,15 @@ function go(path: string) {
         <SquareActivity :size="15" />
         <span>{{ t('nav.runWorkspace') }}</span>
         <span class="sidebar-count sidebar-count--active">{{ run_attention_count }}</span>
+      </button>
+      <button
+        class="sidebar-link"
+        :class="{ active: is_active('/review') }"
+        @click="go('/review')"
+      >
+        <ClipboardCheck :size="15" />
+        <span>{{ t('commenter.review') }}</span>
+        <span class="sidebar-count sidebar-count--active">{{ review_count }}</span>
       </button>
       <button
         class="sidebar-link"

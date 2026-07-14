@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   applyEventToStreamSlices,
+  applyEventsToStreamSlices,
   rebuildStreamSlices,
   STREAM_SLICE_TEXT_CAP_BYTES,
   STREAM_SLICE_TEXT_KEEP_COUNT,
@@ -69,7 +70,7 @@ function key(path: string): string {
   assert.equal(slice.error, 'boom');
 }
 
-// 5. LRU: 31st streaming file evicts text from the oldest by last_chunk_at
+// 5. A stream beyond the bounded live-file window evicts the oldest text.
 {
   let map = new Map<string, LiveStreamSlice>();
   for (let i = 0; i < STREAM_SLICE_TEXT_KEEP_COUNT + 1; i += 1) {
@@ -84,7 +85,7 @@ function key(path: string): string {
   assert.equal(newest.text, 'data');
 }
 
-// 6. 5MB cap stops appending and inserts truncation marker
+// 6. The bounded per-file preview stops appending and inserts a truncation marker.
 {
   let map = new Map<string, LiveStreamSlice>();
   map = applyEventToStreamSlices(map, event('request_started', 'big.ts', 10));
@@ -107,6 +108,20 @@ function key(path: string): string {
   const slice = map.get(key('b.ts'))!;
   assert.equal(slice.text, 'hello world');
   assert.equal(slice.status, 'completed');
+}
+
+// Batched chunks use one state transition while preserving exact ordering.
+{
+  const initial = applyEventToStreamSlices(new Map(), event('request_started', 'batch.ts', 10));
+  const next = applyEventsToStreamSlices(initial, [
+    event('stream_chunk', 'batch.ts', 20, 'one '),
+    event('stream_chunk', 'batch.ts', 30, 'two'),
+    event('model_response_completed', 'batch.ts', 40)
+  ]);
+  const slice = next.get(key('batch.ts'))!;
+  assert.equal(slice.text, 'one two');
+  assert.equal(slice.status, 'completed');
+  assert.notEqual(next, initial);
 }
 
 console.log('commenter stream slice PASSED');

@@ -13,6 +13,10 @@ assert.match(source, /expandActivePaths/, 'tree should expand directories for ac
 assert.match(source, /queued_paths/, 'tree should highlight queued paths');
 assert.match(source, /job_status_by_path/, 'tree should pass per-file job statuses into render nodes');
 assert.match(source, /select-file/, 'tree should emit select-file');
+assert.match(source, /MAX_CACHED_DIRECTORIES = 128/, 'tree directory cache should stay bounded');
+assert.match(source, /cachedDirectory/, 'tree should reuse directories already opened during this app session');
+assert.match(source, /current_profile\.updated_at/, 'tree cache should roll forward when a profile is saved');
+assert.match(source, /invalidateProfileCache/, 'manual root reload should invalidate the selected profile cache');
 
 const node_source = fs.readFileSync(
   new URL('../components/commenter/WorkspaceTreeNode.vue', import.meta.url),

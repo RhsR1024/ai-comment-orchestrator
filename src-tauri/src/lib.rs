@@ -49,6 +49,7 @@ pub fn run() {
             commenter::commands::commenter_update_diff_tool_settings,
             commenter::commands::commenter_list_dir,
             commenter::commands::commenter_get_candidate_text,
+            commenter::commands::commenter_get_original_text,
             commenter::commands::commenter_get_data_paths,
             commenter::commands::commenter_open_path
         ])

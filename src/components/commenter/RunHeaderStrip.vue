@@ -16,37 +16,6 @@ const can_resume = computed(() => run.value?.status === 'paused');
 const can_cancel = computed(() =>
   run.value ? ['running', 'paused', 'pausing'].includes(run.value.status) : false
 );
-
-function format_duration(ms: number): string {
-  if (ms <= 0) {
-    return '0s';
-  }
-  const total_seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(total_seconds / 60);
-  const seconds = total_seconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-const elapsed_label = computed(() => {
-  if (!run.value?.started_at) {
-    return '0s';
-  }
-  const end = run.value.finished_at ?? Date.now();
-  return format_duration(end - run.value.started_at);
-});
-
-const throughput_label = computed(() => {
-  if (!run.value?.started_at) {
-    return '0';
-  }
-  const end = run.value.finished_at ?? Date.now();
-  const minutes = Math.max((end - run.value.started_at) / 60000, 0.01);
-  return (run.value.completed_jobs / minutes).toFixed(1);
-});
-
-const show_token_block = computed(() => false);
-const show_ttft_chip = computed(() => false);
-
 async function onPause() {
   if (run.value) {
     await commenterStore.pauseRun(run.value.run_key);
@@ -83,24 +52,6 @@ async function onCancel() {
       <strong>{{ run.completed_jobs }} / {{ run.total_jobs }}</strong>
       <span>{{ progress }}%</span>
       <div class="runbar-progress-track"><span :style="{ width: `${progress}%` }" /></div>
-    </div>
-
-    <div class="runbar-metrics">
-      <span>
-        {{ t('commenter.header.elapsed') }}
-        <strong>{{ elapsed_label }}</strong>
-      </span>
-      <span>
-        {{ t('commenter.header.throughput') }}
-        <strong>{{ throughput_label }}</strong>
-        {{ t('commenter.header.filesPerMinute') }}
-      </span>
-      <span v-if="show_token_block" class="runbar-tokens">
-        <!-- intentionally hidden until backend exposes token usage -->
-      </span>
-      <span v-if="show_ttft_chip" class="runbar-ttft">
-        <!-- intentionally hidden until backend exposes TTFT -->
-      </span>
     </div>
 
     <div class="runbar-issues">

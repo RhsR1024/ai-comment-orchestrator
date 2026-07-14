@@ -16,19 +16,16 @@ for (const token of [
   'runbar',
   'runbar-identity',
   'runbar-progress',
-  'runbar-metrics',
   'runbar-issues',
   'runbar-actions'
 ]) {
   assert.match(source, new RegExp(token), `${token} should be part of the reference RunBar`);
 }
 
-assert.match(source, /elapsed_label/, 'RunBar should derive elapsed time text');
-assert.match(source, /throughput_label/, 'RunBar should derive throughput text');
+assert.doesNotMatch(source, /elapsed_label/, 'RunBar should omit elapsed time metrics');
+assert.doesNotMatch(source, /throughput_label/, 'RunBar should omit throughput metrics');
 assert.match(source, /aria-label/, 'RunBar icon actions should keep accessible labels');
 assert.doesNotMatch(source, /linear-gradient\(135deg/, 'RunBar should not retain decorative gradient backgrounds');
 assert.doesNotMatch(source, /linear-gradient\(90deg, #34d399/, 'progress track should not retain the multi-stop gradient');
-assert.match(source, /v-if="show_token_block"/, 'RunBar token block must hide when no data is available');
-assert.match(source, /v-if="show_ttft_chip"/, 'TTFT chip must hide when no real value is derivable');
 
 console.log('commenter run header PASSED');

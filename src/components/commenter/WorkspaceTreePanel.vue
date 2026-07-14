@@ -10,6 +10,52 @@ import WorkspaceTreeNode, { type WorkspaceTreeRenderNode } from './WorkspaceTree
 
 type TreeNode = WorkspaceTreeRenderNode;
 
+const MAX_CACHED_DIRECTORIES = 128;
+const directory_cache = new Map<string, CommenterDirEntry[]>();
+
+function directoryCacheKey(profile: string, relative_path: string): string {
+  const current_profile = commenterStore.state.profiles.find(
+    (entry) => entry.project_key === profile
+  );
+  const version = current_profile
+    ? `${current_profile.root_path}\u0000${current_profile.updated_at}`
+    : '';
+  return `${profile}\u0000${version}\u0000${relative_path}`;
+}
+
+function cachedDirectory(profile: string, relative_path: string): CommenterDirEntry[] | null {
+  const key = directoryCacheKey(profile, relative_path);
+  const entries = directory_cache.get(key);
+  if (!entries) {
+    return null;
+  }
+  directory_cache.delete(key);
+  directory_cache.set(key, entries);
+  return entries;
+}
+
+function cacheDirectory(profile: string, relative_path: string, entries: CommenterDirEntry[]) {
+  const key = directoryCacheKey(profile, relative_path);
+  directory_cache.delete(key);
+  directory_cache.set(key, entries);
+  while (directory_cache.size > MAX_CACHED_DIRECTORIES) {
+    const oldest = directory_cache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    directory_cache.delete(oldest);
+  }
+}
+
+function invalidateProfileCache(profile: string) {
+  const prefix = `${profile}\u0000`;
+  for (const key of directory_cache.keys()) {
+    if (key.startsWith(prefix)) {
+      directory_cache.delete(key);
+    }
+  }
+}
+
 const emit = defineEmits<{ 'select-file': [string] }>();
 
 const { t } = use_messages();
@@ -96,7 +142,8 @@ function mapEntry(entry: CommenterDirEntry): TreeNode {
 }
 
 async function load(node: TreeNode) {
-  if (!profile_key.value) {
+  const profile = profile_key.value;
+  if (!profile) {
     return;
   }
   if (node.children) {
@@ -108,7 +155,11 @@ async function load(node: TreeNode) {
     root_error.value = null;
   }
   try {
-    const entries = await commenterApi.listDir(profile_key.value, node.relative_path);
+    const cached = cachedDirectory(profile, node.relative_path);
+    const entries = cached ?? await commenterApi.listDir(profile, node.relative_path);
+    if (!cached) {
+      cacheDirectory(profile, node.relative_path, entries);
+    }
     node.children = entries
       .slice()
       .sort((left, right) => {
@@ -129,6 +180,9 @@ async function load(node: TreeNode) {
 }
 
 async function reloadRoot() {
+  if (profile_key.value) {
+    invalidateProfileCache(profile_key.value);
+  }
   root.children = null;
   root.error = null;
   root_error.value = null;
@@ -267,6 +321,8 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   background: rgba(5, 15, 18, 0.5);
@@ -294,6 +350,7 @@ watch(
   padding: 8px;
   overflow: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .tree-error {

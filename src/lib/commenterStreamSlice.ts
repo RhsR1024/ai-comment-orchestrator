@@ -1,7 +1,7 @@
 import type { CommenterEventPayload } from './commenterTypes';
 
-export const STREAM_SLICE_TEXT_KEEP_COUNT = 30;
-export const STREAM_SLICE_TEXT_CAP_BYTES = 5 * 1024 * 1024;
+export const STREAM_SLICE_TEXT_KEEP_COUNT = 4;
+export const STREAM_SLICE_TEXT_CAP_BYTES = 512 * 1024;
 const TRUNCATION_MARKER = '\n[... truncated, full text in candidate.txt]\n';
 
 export interface LiveStreamSlice {
@@ -70,45 +70,59 @@ export function applyEventToStreamSlices(
   current: Map<string, LiveStreamSlice>,
   event: CommenterEventPayload
 ): Map<string, LiveStreamSlice> {
-  if (!event.relative_path) return current;
-  const k = streamSliceKey(event.run_key, event.relative_path);
-  const next = new Map(current);
+  return applyEventsToStreamSlices(current, [event]);
+}
 
-  switch (event.kind) {
-    case 'request_started':
-      next.set(k, emptySlice(event.created_at));
-      return evictOldestText(next);
-    case 'stream_chunk': {
-      const existing = next.get(k) ?? emptySlice(event.created_at);
-      next.set(k, applyChunk(existing, event.message, event.created_at));
-      return evictOldestText(next);
+export function applyEventsToStreamSlices(
+  current: Map<string, LiveStreamSlice>,
+  events: CommenterEventPayload[]
+): Map<string, LiveStreamSlice> {
+  let next: Map<string, LiveStreamSlice> | null = null;
+
+  for (const event of events) {
+    if (!event.relative_path) continue;
+    const k = streamSliceKey(event.run_key, event.relative_path);
+
+    switch (event.kind) {
+      case 'request_started':
+        next ??= new Map(current);
+        next.set(k, emptySlice(event.created_at));
+        break;
+      case 'stream_chunk': {
+        next ??= new Map(current);
+        const existing = next.get(k) ?? emptySlice(event.created_at);
+        next.set(k, applyChunk(existing, event.message, event.created_at));
+        break;
+      }
+      case 'model_response_completed': {
+        const existing = (next ?? current).get(k);
+        if (!existing) break;
+        next ??= new Map(current);
+        next.set(k, { ...existing, status: 'completed', last_chunk_at: event.created_at });
+        break;
+      }
+      case 'job_failed': {
+        next ??= new Map(current);
+        const existing = next.get(k) ?? emptySlice(event.created_at);
+        next.set(k, {
+          ...existing,
+          status: 'failed',
+          error: event.message || existing.error,
+          last_chunk_at: event.created_at
+        });
+        break;
+      }
+      default:
+        break;
     }
-    case 'model_response_completed': {
-      const existing = next.get(k);
-      if (!existing) return current;
-      next.set(k, { ...existing, status: 'completed', last_chunk_at: event.created_at });
-      return next;
-    }
-    case 'job_failed': {
-      const existing = next.get(k) ?? emptySlice(event.created_at);
-      next.set(k, {
-        ...existing,
-        status: 'failed',
-        error: event.message || existing.error,
-        last_chunk_at: event.created_at
-      });
-      return next;
-    }
-    default:
-      return current;
   }
+
+  return next ? evictOldestText(next) : current;
 }
 
 export function rebuildStreamSlices(events: CommenterEventPayload[]): Map<string, LiveStreamSlice> {
-  return [...events]
-    .sort((left, right) => left.created_at - right.created_at)
-    .reduce(
-      (current, event) => applyEventToStreamSlices(current, event),
-      new Map<string, LiveStreamSlice>()
-    );
+  return applyEventsToStreamSlices(
+    new Map<string, LiveStreamSlice>(),
+    [...events].sort((left, right) => left.created_at - right.created_at)
+  );
 }

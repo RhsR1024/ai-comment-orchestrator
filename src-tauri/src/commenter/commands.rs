@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -37,6 +37,9 @@ use super::{
 };
 
 const COMMENTER_STATE_FILE_NAME: &str = "commenter-state.json";
+const STREAM_EVENT_FLUSH_CHARS: usize = 512;
+const STREAM_EVENT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const STREAM_EVENT_MAX_CHARS: usize = 1200;
 
 pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_upsert_project_profile",
@@ -61,6 +64,7 @@ pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_update_diff_tool_settings",
     "commenter_list_dir",
     "commenter_get_candidate_text",
+    "commenter_get_original_text",
     "commenter_get_data_paths",
     "commenter_open_path",
 ];
@@ -226,6 +230,7 @@ struct StoredJob {
     record: CommenterJobRecord,
     absolute_path: PathBuf,
     kind: FileKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     candidate_content: Option<String>,
     before_hash: Option<String>,
     written_hash: Option<String>,
@@ -364,7 +369,9 @@ impl CommenterCommandSurface {
 
         entries.sort_by(|a, b| match (&a.kind, &b.kind) {
             (CommenterDirEntryKind::Dir, CommenterDirEntryKind::File) => std::cmp::Ordering::Less,
-            (CommenterDirEntryKind::File, CommenterDirEntryKind::Dir) => std::cmp::Ordering::Greater,
+            (CommenterDirEntryKind::File, CommenterDirEntryKind::Dir) => {
+                std::cmp::Ordering::Greater
+            }
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
 
@@ -372,8 +379,9 @@ impl CommenterCommandSurface {
     }
 
     pub fn get_candidate_text(&self, run_key: &str, relative_path: &str) -> Result<String, String> {
-        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&self.data_root(), run_key)
-            .map_err(|e| e.to_string())?;
+        let run_paths =
+            crate::commenter::artifacts::CommenterRunPaths::new(&self.data_root(), run_key)
+                .map_err(|e| e.to_string())?;
         let candidate = read_artifact_text(
             &run_paths.candidate_root,
             relative_path,
@@ -390,6 +398,41 @@ impl CommenterCommandSurface {
             ".commentary.txt",
             "sidecar path escapes run root",
         )
+    }
+
+    pub fn get_original_text(&self, run_key: &str, relative_path: &str) -> Result<String, String> {
+        let run_paths =
+            crate::commenter::artifacts::CommenterRunPaths::new(&self.data_root(), run_key)
+                .map_err(|error| error.to_string())?;
+        let before_path = artifact_output_path(&run_paths.before_root, relative_path, ".before");
+        let before_exists = before_path.is_file();
+        let before = read_artifact_text(
+            &run_paths.before_root,
+            relative_path,
+            ".before",
+            "before path escapes run root",
+        )?;
+        if before_exists {
+            return Ok(before);
+        }
+
+        let source_path = {
+            let state = self.state.lock().map_err(|_| "state lock poisoned")?;
+            state
+                .runs
+                .get(run_key)
+                .and_then(|run| {
+                    run.jobs
+                        .iter()
+                        .find(|job| job.record.relative_path == relative_path)
+                })
+                .map(|job| job.absolute_path.clone())
+        };
+
+        match source_path {
+            Some(path) => std::fs::read_to_string(path).map_err(|error| error.to_string()),
+            None => Ok(String::new()),
+        }
     }
 
     pub fn enqueue_run(
@@ -620,10 +663,14 @@ impl CommenterCommandSurface {
             return Err(format!("unknown job: {}", request.relative_path));
         };
 
-        let candidate_content = job
-            .candidate_content
-            .clone()
-            .ok_or_else(|| "job has no candidate content".to_string())?;
+        let candidate_path = artifact_output_path(
+            &run_paths.candidate_root,
+            &job.record.relative_path,
+            ".candidate",
+        );
+        let candidate_content = fs::read_to_string(&candidate_path)
+            .or_else(|artifact_error| job.candidate_content.clone().ok_or(artifact_error))
+            .map_err(|error| format!("read candidate artifact failed: {error}"))?;
         let before_content = fs::read_to_string(&job.absolute_path).unwrap_or_default();
         let relative_path = job.record.relative_path.clone();
         write_before_snapshot(&run_paths, &relative_path, &before_content, job)?;
@@ -631,15 +678,8 @@ impl CommenterCommandSurface {
         job.record.status = CommentJobStatus::Done;
         job.record.error_message = None;
         job.written_hash = Some(hash_content(&candidate_content));
-        job.record.candidate_artifact_path = Some(
-            artifact_output_path(
-                &run_paths.candidate_root,
-                &job.record.relative_path,
-                ".candidate",
-            )
-            .to_string_lossy()
-            .to_string(),
-        );
+        job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
+        job.candidate_content = None;
         stored_run.run.updated_at = timestamp;
         push_event(
             &mut stored_run.events,
@@ -1164,14 +1204,41 @@ fn load_state(data_root: PathBuf) -> CommenterState {
         .and_then(|raw| serde_json::from_str::<CommenterState>(&raw).ok())
         .unwrap_or_else(|| default_state(data_root.clone()));
     state.data_root = data_root;
+    let compacted = compact_transient_state(&mut state);
     recover_persisted_state(&mut state);
+    if compacted {
+        let _ = persist_locked_state(&state);
+    }
     state
+}
+
+fn compact_transient_state(state: &mut CommenterState) -> bool {
+    let mut changed = false;
+    for stored_run in state.runs.values_mut() {
+        let event_count = stored_run.events.len();
+        stored_run
+            .events
+            .retain(|event| event.kind != CommenterEventKind::StreamChunk);
+        changed |= stored_run.events.len() != event_count;
+
+        for job in &mut stored_run.jobs {
+            let artifact_exists = job
+                .record
+                .candidate_artifact_path
+                .as_deref()
+                .is_some_and(|path| Path::new(path).is_file());
+            if artifact_exists && job.candidate_content.take().is_some() {
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 fn persist_locked_state(state: &CommenterState) -> Result<(), String> {
     fs::create_dir_all(&state.data_root).map_err(|error| error.to_string())?;
     let snapshot_path = state_snapshot_path(&state.data_root);
-    let payload = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
+    let payload = serde_json::to_vec(state).map_err(|error| error.to_string())?;
     fs::write(snapshot_path, payload).map_err(|error| error.to_string())
 }
 
@@ -1538,8 +1605,11 @@ async fn generate_candidate(
         context: request_context,
     };
     let request_debug = build_chat_completions_request_debug(&request);
-    let request_artifact_path =
-        artifact_output_path(&run_paths.request_root, &action.relative_path, ".request.json");
+    let request_artifact_path = artifact_output_path(
+        &run_paths.request_root,
+        &action.relative_path,
+        ".request.json",
+    );
     if let Err(error) = write_json_artifact(&request_artifact_path, &request_debug) {
         return GeneratedCandidate {
             result: Err(format!("write request artifact failed: {error}")),
@@ -1547,8 +1617,11 @@ async fn generate_candidate(
         };
     }
     let request_artifact_label = artifact_display_path(run_paths, &request_artifact_path);
-    let response_artifact_path =
-        artifact_output_path(&run_paths.response_root, &action.relative_path, ".response.json");
+    let response_artifact_path = artifact_output_path(
+        &run_paths.response_root,
+        &action.relative_path,
+        ".response.json",
+    );
     let response_artifact_label = artifact_display_path(run_paths, &response_artifact_path);
 
     let mut events = Vec::new();
@@ -1564,17 +1637,22 @@ async fn generate_candidate(
     emit_commenter_event(app, &request_started);
     events.push(request_started);
 
+    let mut stream_buffer = String::new();
+    let mut emitted_first_chunk = false;
+    let mut last_stream_emit = Instant::now();
     let outcome = call_chat_completions_with_debug(request, |piece| {
-        let payload = job_event(
-            action,
-            CommenterEventKind::StreamChunk,
-            EventLevel::Info,
-            truncate_event_message(piece),
-        );
-        emit_commenter_event(app, &payload);
-        events.push(payload);
+        stream_buffer.push_str(piece);
+        if !emitted_first_chunk
+            || stream_buffer.chars().count() >= STREAM_EVENT_FLUSH_CHARS
+            || last_stream_emit.elapsed() >= STREAM_EVENT_FLUSH_INTERVAL
+        {
+            emit_buffered_stream_events(action, app, &mut stream_buffer);
+            emitted_first_chunk = true;
+            last_stream_emit = Instant::now();
+        }
     })
     .await;
+    emit_buffered_stream_events(action, app, &mut stream_buffer);
     if let Err(error) = write_json_artifact(&response_artifact_path, &outcome.debug.response) {
         return GeneratedCandidate {
             result: Err(format!("write response artifact failed: {error}")),
@@ -1586,7 +1664,9 @@ async fn generate_candidate(
         Ok(value) => value,
         Err(error) => {
             return GeneratedCandidate {
-                result: Err(format!("{error} (response artifact: {response_artifact_label})")),
+                result: Err(format!(
+                    "{error} (response artifact: {response_artifact_label})"
+                )),
                 events,
             }
         }
@@ -1639,13 +1719,35 @@ fn job_event(
     }
 }
 
-fn truncate_event_message(message: &str) -> String {
-    const MAX_CHARS: usize = 1200;
-    let mut value = message.chars().take(MAX_CHARS).collect::<String>();
-    if message.chars().count() > MAX_CHARS {
-        value.push_str("...");
+fn emit_buffered_stream_events(action: &JobAction, app: Option<&AppHandle>, buffer: &mut String) {
+    if buffer.is_empty() {
+        return;
     }
-    value
+
+    let message = std::mem::take(buffer);
+    let mut chunk = String::new();
+    let mut chunk_chars = 0;
+    for character in message.chars() {
+        chunk.push(character);
+        chunk_chars += 1;
+        if chunk_chars == STREAM_EVENT_MAX_CHARS {
+            emit_stream_event(action, app, std::mem::take(&mut chunk));
+            chunk_chars = 0;
+        }
+    }
+    if !chunk.is_empty() {
+        emit_stream_event(action, app, chunk);
+    }
+}
+
+fn emit_stream_event(action: &JobAction, app: Option<&AppHandle>, message: String) {
+    let payload = job_event(
+        action,
+        CommenterEventKind::StreamChunk,
+        EventLevel::Info,
+        message,
+    );
+    emit_commenter_event(app, &payload);
 }
 
 /// 去掉模型偶尔附带的 ``` 围栏与首尾空行。
@@ -1715,14 +1817,14 @@ fn apply_job_outcome(
             candidate_path,
             before_hash,
             written_hash,
-            candidate,
+            candidate: _candidate,
             source: _source,
         } => {
             job.record.before_artifact_path = Some(before_path.to_string_lossy().to_string());
             job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
             job.before_hash = Some(before_hash);
             job.written_hash = Some(written_hash);
-            job.candidate_content = Some(candidate);
+            job.candidate_content = None;
             job.record.status = CommentJobStatus::Done;
             Some(CommenterEventPayload {
                 kind: CommenterEventKind::JobUpdated,
@@ -1737,13 +1839,13 @@ fn apply_job_outcome(
             before_path,
             candidate_path,
             before_hash,
-            candidate,
+            candidate: _candidate,
             source: _source,
         } => {
             job.record.before_artifact_path = Some(before_path.to_string_lossy().to_string());
             job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
             job.before_hash = Some(before_hash);
-            job.candidate_content = Some(candidate);
+            job.candidate_content = None;
             job.record.status = CommentJobStatus::ReviewNeeded;
             Some(CommenterEventPayload {
                 kind: CommenterEventKind::ReviewRequested,
@@ -1758,14 +1860,14 @@ fn apply_job_outcome(
             before_path,
             candidate_path,
             before_hash,
-            candidate,
+            candidate: _candidate,
             source: _source,
             reason,
         } => {
             job.record.before_artifact_path = Some(before_path.to_string_lossy().to_string());
             job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
             job.before_hash = Some(before_hash);
-            job.candidate_content = Some(candidate);
+            job.candidate_content = None;
             job.record.status = CommentJobStatus::ReviewNeeded;
             job.record.error_message = Some(reason.clone());
             Some(CommenterEventPayload {
@@ -1861,7 +1963,12 @@ fn stored_run_detail(stored_run: &StoredRun) -> CommenterRunDetail {
             .iter()
             .map(|job| job.record.clone())
             .collect(),
-        events: stored_run.events.clone(),
+        events: stored_run
+            .events
+            .iter()
+            .filter(|event| event.kind != CommenterEventKind::StreamChunk)
+            .cloned()
+            .collect(),
     }
 }
 
@@ -2186,6 +2293,16 @@ pub fn commenter_get_candidate_text(
 
 #[cfg(not(test))]
 #[tauri::command]
+pub fn commenter_get_original_text(
+    surface: tauri::State<'_, CommenterCommandSurface>,
+    run_key: String,
+    relative_path: String,
+) -> Result<String, String> {
+    surface.get_original_text(&run_key, &relative_path)
+}
+
+#[cfg(not(test))]
+#[tauri::command]
 pub fn commenter_get_data_paths(
     surface: tauri::State<'_, CommenterCommandSurface>,
 ) -> Result<CommenterDataPaths, String> {
@@ -2207,9 +2324,7 @@ pub fn commenter_open_path(
             // when it lives under the managed data root, then re-canonicalize.
             if target.starts_with(&data_root) {
                 std::fs::create_dir_all(&target).map_err(|error| error.to_string())?;
-                target
-                    .canonicalize()
-                    .map_err(|error| error.to_string())?
+                target.canonicalize().map_err(|error| error.to_string())?
             } else {
                 return Err(format!("path is outside the managed data root: {path}"));
             }
@@ -2290,7 +2405,7 @@ mod tests {
                 allow_light_rewrite: true,
                 json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
                 api_base_url: api_base_url.to_string(),
-                api_model: "glm-5.0".to_string(),
+                api_model: DEFAULT_API_MODEL.to_string(),
                 api_bearer_token: String::new(),
                 request_timeout_secs: 600,
             },
@@ -2630,7 +2745,7 @@ data: [DONE]\n\n"
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn start_run_records_request_and_stream_events() {
+    async fn start_run_keeps_stream_chunks_transient() {
         let temp = tempdir().expect("tempdir");
         let project_root = temp.path().join("project");
         fs::create_dir_all(project_root.join("src")).expect("src dir");
@@ -2672,13 +2787,81 @@ data: [DONE]\n\n"
             .events
             .iter()
             .any(|event| event.kind == CommenterEventKind::RequestStarted));
-        assert!(detail.events.iter().any(|event| {
-            event.kind == CommenterEventKind::StreamChunk && event.message.contains("main comment")
-        }));
+        assert!(detail
+            .events
+            .iter()
+            .all(|event| event.kind != CommenterEventKind::StreamChunk));
         assert!(detail
             .events
             .iter()
             .any(|event| event.kind == CommenterEventKind::ModelResponseCompleted));
+        let snapshot = fs::read_to_string(state_snapshot_path(&service.data_root()))
+            .expect("read compact state snapshot");
+        assert!(!snapshot.contains("stream_chunk"));
+        assert!(!snapshot.contains("candidate_content"));
+    }
+
+    #[test]
+    fn load_state_compacts_legacy_stream_events_and_artifact_backed_candidates() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(project_root.join("src")).expect("src dir");
+        fs::write(project_root.join("src/main.go"), "package main\n").expect("go");
+        let data_root = temp.path().join(".commenter-data");
+        let service = CommenterCommandSurface::new(&data_root);
+        service
+            .upsert_project_profile(draft(project_root.to_string_lossy().as_ref()))
+            .expect("profile");
+        let handle = service
+            .enqueue_run(CommenterEnqueueRunRequest {
+                profile_key: "demo".to_string(),
+                requested_by: Some("test".to_string()),
+                run_mode: CommentRunMode::Review,
+                max_workers: 1,
+                max_retries: 0,
+                max_files: 10,
+                allow_light_rewrite: true,
+                json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
+            })
+            .expect("run");
+        let candidate_path = data_root.join("legacy-candidate.txt");
+        fs::write(&candidate_path, "artifact candidate").expect("candidate artifact");
+
+        {
+            let mut state = service.state.lock().expect("state");
+            let stored_run = state.runs.get_mut(&handle.run_key).expect("stored run");
+            stored_run.events.push(CommenterEventPayload {
+                kind: CommenterEventKind::StreamChunk,
+                run_key: handle.run_key.clone(),
+                relative_path: Some("src/main.go".to_string()),
+                level: EventLevel::Info,
+                message: "legacy streamed payload".to_string(),
+                created_at: unix_timestamp_now(),
+            });
+            stored_run.jobs[0].candidate_content = Some("duplicate candidate".to_string());
+            stored_run.jobs[0].record.candidate_artifact_path =
+                Some(candidate_path.to_string_lossy().to_string());
+            persist_locked_state(&state).expect("persist legacy state");
+        }
+        drop(service);
+
+        let reloaded = CommenterCommandSurface::new(&data_root);
+        let detail = reloaded
+            .get_run_detail(&handle.run_key)
+            .expect("detail")
+            .expect("stored run");
+        assert!(detail
+            .events
+            .iter()
+            .all(|event| event.kind != CommenterEventKind::StreamChunk));
+        let state = reloaded.state.lock().expect("state");
+        assert!(state.runs[&handle.run_key].jobs[0]
+            .candidate_content
+            .is_none());
+        drop(state);
+        let snapshot = fs::read_to_string(state_snapshot_path(&data_root)).expect("snapshot");
+        assert!(!snapshot.contains("legacy streamed payload"));
+        assert!(!snapshot.contains("duplicate candidate"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2719,9 +2902,11 @@ data: [DONE]\n\n"
             .start_run(None, &handle.run_key)
             .await
             .expect("start run");
-        let run_paths =
-            crate::commenter::artifacts::CommenterRunPaths::new(&service.data_root(), &handle.run_key)
-                .expect("run paths");
+        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(
+            &service.data_root(),
+            &handle.run_key,
+        )
+        .expect("run paths");
         let request_artifact = run_paths
             .request_root
             .join("src")
@@ -2915,5 +3100,26 @@ data: [DONE]\n\n"
             .get_candidate_text("nonexistent-run", "missing/file.ts")
             .expect("missing artifact returns Ok");
         assert_eq!(text, "");
+    }
+
+    #[test]
+    fn get_original_text_returns_before_artifact_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_root = temp.path().join(".commenter-data");
+        let service = CommenterCommandSurface::new(&data_root);
+
+        let run_key = "demo-run";
+        let run_paths = crate::commenter::artifacts::CommenterRunPaths::new(&data_root, run_key)
+            .expect("run paths");
+        run_paths.create_directories().expect("mkdirs");
+
+        let before_path = run_paths.before_root.join("src").join("a.ts.before");
+        std::fs::create_dir_all(before_path.parent().unwrap()).unwrap();
+        std::fs::write(&before_path, "// original\nexport {};\n").unwrap();
+
+        let text = service
+            .get_original_text(run_key, "src/a.ts")
+            .expect("read original");
+        assert_eq!(text, "// original\nexport {};\n");
     }
 }

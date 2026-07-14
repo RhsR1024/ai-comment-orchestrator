@@ -208,6 +208,15 @@ export const commenterApi = {
     }
     return mockCommenterBackend.getCandidateText(run_key, relative_path);
   },
+  getOriginalText: async (run_key: string, relative_path: string): Promise<string> => {
+    if (hasTauriRuntime()) {
+      return tauriInvoke<string>('commenter_get_original_text', {
+        runKey: run_key,
+        relativePath: relative_path
+      });
+    }
+    return mockCommenterBackend.getOriginalText(run_key, relative_path);
+  },
   getDataPaths: async (): Promise<CommenterDataPaths> => {
     if (hasTauriRuntime()) {
       return tauriInvoke<CommenterDataPaths>('commenter_get_data_paths');

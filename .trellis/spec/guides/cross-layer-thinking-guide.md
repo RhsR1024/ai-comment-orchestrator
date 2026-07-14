@@ -82,6 +82,12 @@ After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
+- [ ] For streaming protocols, identified both the terminal marker and the no-progress timeout
+- [ ] Coalesced high-frequency events before IPC/reactive boundaries without dropping or reordering payload data
+- [ ] Prevented timer polling from starting overlapping requests when one refresh is slow
+- [ ] Classified high-volume payloads as transient or durable at every store/serialization boundary
+- [ ] Verified polling responses do not resend data already delivered through a live event channel
+- [ ] Defined a byte/item bound for every in-memory preview cache and an on-demand path to full disk-backed content
 
 ---
 

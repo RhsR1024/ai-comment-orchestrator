@@ -34,3 +34,9 @@ test_truncation_edge.txt
 
 .superpowers/brainstorm/
 .trellis/tasks/
+.trellis/workspace/codex/
+
+__pycache__/
+*.py[cod]
+
+.agents/skills/ui-ux-pro-max/

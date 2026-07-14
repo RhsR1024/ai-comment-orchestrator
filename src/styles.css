@@ -608,23 +608,33 @@ a {
   padding: 16px 10px;
 }
 
-.global-subnav a {
+.global-subnav button {
   display: flex;
   align-items: center;
+  width: 100%;
   min-height: 34px;
   border: 1px solid transparent;
   border-radius: 7px;
+  background: transparent;
   color: var(--aco-muted);
   padding: 7px 12px;
+  font-family: inherit;
   font-size: 13px;
-  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
 }
 
-.global-subnav a:hover,
-.global-subnav a:focus-visible {
+.global-subnav button:hover,
+.global-subnav button:focus-visible {
   border-color: var(--aco-border);
   background: var(--aco-surface-2);
   color: var(--aco-text);
+}
+
+.global-subnav button.active {
+  border-color: rgba(95, 212, 204, 0.3);
+  background: rgba(95, 212, 204, 0.08);
+  color: var(--aco-teal);
 }
 
 .global-reference-content {
@@ -706,16 +716,11 @@ a {
   font-size: 12px;
 }
 
-.single-file-token-placeholder input[disabled] {
-  color: var(--aco-subtle);
-  background: var(--aco-surface-2);
-  border-color: var(--aco-border);
-  cursor: not-allowed;
-}
-
 .run-reference-shell {
   display: flex;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   flex-direction: column;
   background: var(--aco-bg);
 }
@@ -744,13 +749,16 @@ a {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   min-height: 0;
+  overflow: hidden;
   flex: 1;
 }
 
 .run-left-rail {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   border-right: 1px solid var(--aco-border);
   background: var(--aco-surface-1);
 }
@@ -853,15 +861,56 @@ a {
 }
 
 .run-stream-rail {
-  min-width: 0;
-  background: var(--aco-bg);
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--aco-bg);
+}
+
+.run-left-body,
+.run-reference-shell .tree,
+.run-reference-shell .stream-body,
+.run-reference-shell .request-detail {
+  scrollbar-color: #3b4852 var(--aco-surface-1);
+  scrollbar-width: thin;
+}
+
+.run-left-body::-webkit-scrollbar,
+.run-reference-shell .tree::-webkit-scrollbar,
+.run-reference-shell .stream-body::-webkit-scrollbar,
+.run-reference-shell .request-detail::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.run-left-body::-webkit-scrollbar-track,
+.run-reference-shell .tree::-webkit-scrollbar-track,
+.run-reference-shell .stream-body::-webkit-scrollbar-track,
+.run-reference-shell .request-detail::-webkit-scrollbar-track {
+  background: var(--aco-surface-1);
+}
+
+.run-left-body::-webkit-scrollbar-thumb,
+.run-reference-shell .tree::-webkit-scrollbar-thumb,
+.run-reference-shell .stream-body::-webkit-scrollbar-thumb,
+.run-reference-shell .request-detail::-webkit-scrollbar-thumb {
+  border: 2px solid var(--aco-surface-1);
+  border-radius: 999px;
+  background: #3b4852;
+}
+
+.run-left-body::-webkit-scrollbar-thumb:hover,
+.run-reference-shell .tree::-webkit-scrollbar-thumb:hover,
+.run-reference-shell .stream-body::-webkit-scrollbar-thumb:hover,
+.run-reference-shell .request-detail::-webkit-scrollbar-thumb:hover {
+  background: #52616d;
 }
 
 .runbar {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(220px, 1fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1.1fr) minmax(220px, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -924,19 +973,6 @@ a {
   display: block;
   height: 100%;
   background: var(--aco-green);
-}
-
-.runbar-metrics {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--aco-muted);
-  min-width: 0;
-}
-
-.runbar-metrics strong {
-  color: var(--aco-text);
 }
 
 .runbar-issues {
@@ -1098,6 +1134,12 @@ a {
     grid-template-columns: 1fr;
   }
 
+  .run-reference-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .sidebar {
     min-height: auto;
     border-right: 0;
@@ -1106,6 +1148,12 @@ a {
 
   .run-detail-reference-grid {
     grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .run-left-rail,
+  .run-stream-rail {
+    overflow: visible;
   }
 
   .settings-summary-grid {

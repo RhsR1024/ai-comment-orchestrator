@@ -592,6 +592,11 @@ export const mockCommenterBackend = {
     void _relative_path;
     return '';
   },
+  getOriginalText: async (_run_key: string, _relative_path: string): Promise<string> => {
+    void _run_key;
+    void _relative_path;
+    return '';
+  },
   getDataPaths: async () => ({
     data_root: '',
     artifacts_root: '',

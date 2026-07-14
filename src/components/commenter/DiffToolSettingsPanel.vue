@@ -8,10 +8,21 @@ import { use_messages } from '../../locales/messages';
 
 const { t } = use_messages();
 
+type GlobalSettingsSection =
+  | 'api-credentials'
+  | 'concurrency-quota'
+  | 'diff-tool'
+  | 'storage-logs'
+  | 'about-settings';
+
 const props = withDefaults(
-  defineProps<{ variant?: 'panel' | 'reference' }>(),
+  defineProps<{
+    variant?: 'panel' | 'reference';
+    activeSection?: GlobalSettingsSection;
+  }>(),
   {
-    variant: 'panel'
+    variant: 'panel',
+    activeSection: 'api-credentials'
   }
 );
 
@@ -120,7 +131,13 @@ defineExpose({ saveSettings, resetSettings });
 
 <template>
   <section :class="['panel', { 'global-form-panel': props.variant === 'reference' }]">
-    <section id="api-credentials" class="global-section">
+    <section
+      v-show="props.variant !== 'reference' || props.activeSection === 'api-credentials'"
+      id="api-credentials"
+      class="global-section"
+      role="tabpanel"
+      aria-labelledby="global-tab-api-credentials"
+    >
       <header class="global-section-header">
         <h3>{{ t('global.section.apiCredentials') }}</h3>
         <p>{{ t('global.section.apiCredentialsHelp') }}</p>
@@ -151,7 +168,13 @@ defineExpose({ saveSettings, resetSettings });
       </div>
     </section>
 
-    <section id="concurrency-quota" class="global-section">
+    <section
+      v-show="props.variant !== 'reference' || props.activeSection === 'concurrency-quota'"
+      id="concurrency-quota"
+      class="global-section"
+      role="tabpanel"
+      aria-labelledby="global-tab-concurrency-quota"
+    >
       <header class="global-section-header">
         <h3>{{ t('global.section.concurrencyQuota') }}</h3>
         <p>{{ t('global.section.concurrencyQuotaHelp') }}</p>
@@ -165,15 +188,16 @@ defineExpose({ saveSettings, resetSettings });
           <label>{{ t('commenter.diff.apiConcurrencyLimit') }}</label>
           <input v-model.number="form.api_concurrency_limit" type="number" min="1">
         </div>
-        <div class="field single-file-token-placeholder">
-          <label>{{ t('global.singleFileToken.label') }}</label>
-          <input type="number" disabled value="8000">
-          <p class="field-hint">{{ t('global.singleFileToken.disabled') }}</p>
-        </div>
       </div>
     </section>
 
-    <section id="diff-tool" class="global-section">
+    <section
+      v-show="props.variant !== 'reference' || props.activeSection === 'diff-tool'"
+      id="diff-tool"
+      class="global-section"
+      role="tabpanel"
+      aria-labelledby="global-tab-diff-tool"
+    >
       <header class="global-section-header">
         <h3>{{ t('global.section.diffTool') }}</h3>
         <p>{{ t('global.section.diffToolHelp') }}</p>
@@ -185,7 +209,13 @@ defineExpose({ saveSettings, resetSettings });
       </div>
     </section>
 
-    <section id="storage-logs" class="global-section">
+    <section
+      v-show="props.variant !== 'reference' || props.activeSection === 'storage-logs'"
+      id="storage-logs"
+      class="global-section"
+      role="tabpanel"
+      aria-labelledby="global-tab-storage-logs"
+    >
       <header class="global-section-header">
         <h3>{{ t('global.section.storageLogs') }}</h3>
         <p>{{ t('global.section.storageLogsHelp') }}</p>
@@ -239,7 +269,13 @@ defineExpose({ saveSettings, resetSettings });
       </dl>
     </section>
 
-    <section id="about-settings" class="global-section">
+    <section
+      v-show="props.variant !== 'reference' || props.activeSection === 'about-settings'"
+      id="about-settings"
+      class="global-section"
+      role="tabpanel"
+      aria-labelledby="global-tab-about-settings"
+    >
       <header class="global-section-header">
         <h3>{{ t('global.section.about') }}</h3>
       </header>

@@ -22,7 +22,13 @@ const body_ref = ref<HTMLElement | null>(null);
 const fallback_text = ref('');
 const fetch_error = ref<string | null>(null);
 const fetching = ref(false);
+const original_text = ref('');
+const original_error = ref<string | null>(null);
+const fetching_original = ref(false);
 const active_tab = ref<'diff' | 'stream' | 'original' | 'request'>('stream');
+let candidate_request_id = 0;
+let original_request_id = 0;
+let original_loaded_key: string | null = null;
 
 const file_events = computed<CommenterEventPayload[]>(() => {
   const path = props.relative_path;
@@ -185,8 +191,10 @@ const badge_class = computed(() => {
 });
 
 async function maybeFetchCandidate() {
+  const request_id = ++candidate_request_id;
   fallback_text.value = '';
   fetch_error.value = null;
+  fetching.value = false;
   if (props.mode !== 'locked') {
     return;
   }
@@ -202,11 +210,52 @@ async function maybeFetchCandidate() {
 
   fetching.value = true;
   try {
-    fallback_text.value = await commenterApi.getCandidateText(props.run_key, props.relative_path);
+    const text = await commenterApi.getCandidateText(props.run_key, props.relative_path);
+    if (request_id === candidate_request_id) {
+      fallback_text.value = text;
+    }
   } catch (error) {
-    fetch_error.value = error instanceof Error ? error.message : String(error);
+    if (request_id === candidate_request_id) {
+      fetch_error.value = error instanceof Error ? error.message : String(error);
+    }
   } finally {
-    fetching.value = false;
+    if (request_id === candidate_request_id) {
+      fetching.value = false;
+    }
+  }
+}
+
+async function maybeFetchOriginal() {
+  if (active_tab.value !== 'original' && active_tab.value !== 'diff') {
+    return;
+  }
+  if (!props.run_key || !props.relative_path) {
+    return;
+  }
+
+  const loaded_key = `${props.run_key}|${props.relative_path}|${props.status}`;
+  if (original_loaded_key === loaded_key) {
+    return;
+  }
+
+  const request_id = ++original_request_id;
+  original_text.value = '';
+  original_error.value = null;
+  fetching_original.value = true;
+  try {
+    const text = await commenterApi.getOriginalText(props.run_key, props.relative_path);
+    if (request_id === original_request_id) {
+      original_text.value = text;
+      original_loaded_key = loaded_key;
+    }
+  } catch (error) {
+    if (request_id === original_request_id) {
+      original_error.value = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (request_id === original_request_id) {
+      fetching_original.value = false;
+    }
   }
 }
 
@@ -214,6 +263,14 @@ watch(
   () => [props.mode, props.run_key, props.relative_path, props.status, props.live_text.length] as const,
   () => {
     void maybeFetchCandidate();
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [active_tab.value, props.run_key, props.relative_path, props.status] as const,
+  () => {
+    void maybeFetchOriginal();
   },
   { immediate: true }
 );
@@ -283,6 +340,99 @@ watch(
       </div>
     </template>
 
+    <section
+      v-else-if="active_tab === 'diff'"
+      class="file-preview file-preview--diff"
+    >
+      <div
+        v-if="!relative_path"
+        class="empty-state"
+      >
+        {{ t('commenter.stream.idle') }}
+      </div>
+      <div
+        v-else-if="fetching_original || fetching"
+        class="empty-state"
+      >
+        {{ t('commenter.stream.loading') }}
+      </div>
+      <div
+        v-else-if="original_error || fetch_error"
+        class="stream-error"
+      >
+        {{ original_error ?? fetch_error }}
+      </div>
+      <div
+        v-else
+        class="diff-preview-grid"
+      >
+        <article class="diff-preview-pane">
+          <header>
+            {{ t('commenter.stream.original') }}
+          </header>
+          <pre
+            v-if="original_text"
+            class="preview-body mono"
+          ><code>{{ original_text }}</code></pre>
+          <div
+            v-else
+            class="empty-state"
+          >
+            {{ t('commenter.stream.originalEmpty') }}
+          </div>
+        </article>
+        <article class="diff-preview-pane diff-preview-pane--candidate">
+          <header>
+            {{ t('commenter.stream.candidate') }}
+          </header>
+          <pre
+            v-if="display_text"
+            class="preview-body mono"
+          ><code>{{ display_text }}</code></pre>
+          <div
+            v-else
+            class="empty-state"
+          >
+            {{ t('commenter.stream.empty') }}
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section
+      v-else-if="active_tab === 'original'"
+      class="file-preview"
+    >
+      <div
+        v-if="!relative_path"
+        class="empty-state"
+      >
+        {{ t('commenter.stream.idle') }}
+      </div>
+      <div
+        v-else-if="fetching_original"
+        class="empty-state"
+      >
+        {{ t('commenter.stream.loading') }}
+      </div>
+      <div
+        v-else-if="original_error"
+        class="stream-error"
+      >
+        {{ original_error }}
+      </div>
+      <pre
+        v-else-if="original_text"
+        class="preview-body mono"
+      ><code>{{ original_text }}</code></pre>
+      <div
+        v-else
+        class="empty-state"
+      >
+        {{ t('commenter.stream.originalEmpty') }}
+      </div>
+    </section>
+
     <section v-else-if="active_tab === 'request'" class="request-detail">
       <div v-if="!relative_path" class="empty-state">
         {{ t('commenter.stream.idle') }}
@@ -345,6 +495,8 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .stream-badge {
@@ -382,6 +534,7 @@ watch(
 
 .stream-body {
   flex: 1;
+  min-height: 0;
   margin: 0;
   padding: 14px;
   overflow: auto;
@@ -415,8 +568,76 @@ watch(
   border-bottom: 1px solid rgba(239, 90, 111, 0.18);
 }
 
+.file-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.diff-preview-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--aco-border);
+}
+
+.diff-preview-pane:last-child {
+  border-right: 0;
+}
+
+.diff-preview-pane > header {
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--aco-border);
+  background: rgba(239, 90, 111, 0.08);
+  color: var(--aco-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.diff-preview-pane--candidate > header {
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--aco-text);
+}
+
+@media (max-width: 860px) {
+  .diff-preview-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+
+  .diff-preview-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--aco-border);
+  }
+}
+
 .request-detail {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 16px 18px;
   display: flex;

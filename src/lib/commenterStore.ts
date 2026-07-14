@@ -2,6 +2,7 @@ import { markRaw, reactive } from 'vue';
 
 import {
   applyEventToStreamSlices,
+  applyEventsToStreamSlices,
   rebuildStreamSlices,
   type LiveStreamSlice
 } from './commenterStreamSlice';
@@ -58,7 +59,10 @@ const state = reactive<CommenterStoreState>({
 
 let event_unsubscribe: (() => void) | null = null;
 let event_subscription_pending = false;
+let initialization_pending: Promise<void> | null = null;
+let initialized = false;
 let refresh_timer: number | null = null;
+let runtime_refresh_pending: Promise<void> | null = null;
 let active_start_requests = 0;
 let chunk_buffer: CommenterEventPayload[] = [];
 let chunk_flush_scheduled = false;
@@ -175,10 +179,7 @@ function flushChunkBuffer() {
   }
   const events = chunk_buffer;
   chunk_buffer = [];
-  let next = state.live_streams;
-  for (const event of events) {
-    next = applyEventToStreamSlices(next, event);
-  }
+  const next = applyEventsToStreamSlices(state.live_streams, events);
   if (next !== state.live_streams) {
     state.live_streams = next;
   }
@@ -255,7 +256,7 @@ function startAutoRefresh() {
   }
 
   refresh_timer = window.setInterval(() => {
-    void refreshCollectionsQuiet();
+    void refreshRuntimeCollectionsQuiet();
   }, REFRESH_INTERVAL_MS);
 }
 
@@ -307,12 +308,39 @@ async function refreshCollections() {
   stopAutoRefreshIfIdle();
 }
 
-async function refreshCollectionsQuiet() {
-  try {
-    await refreshCollections();
-  } catch (error) {
-    state.error_message = error instanceof Error ? error.message : String(error);
+async function refreshRuntimeCollections() {
+  const [runs, review_jobs] = await Promise.all([
+    commenterApi.listRuns(),
+    commenterApi.listReviewJobs()
+  ]);
+
+  state.runs = runs;
+  state.review_jobs = review_jobs;
+  state.history_runs = runs.filter((run) => is_run_finished(run.status));
+
+  if (!state.selected_run_key && runs.length > 0) {
+    state.selected_run_key = runs[0].run_key;
   }
+  if (state.selected_run_key) {
+    applySelectedRunDetail(await commenterApi.getRunDetail(state.selected_run_key));
+  } else {
+    applySelectedRunDetail(null);
+  }
+  stopAutoRefreshIfIdle();
+}
+
+function refreshRuntimeCollectionsQuiet(): Promise<void> {
+  if (runtime_refresh_pending) {
+    return runtime_refresh_pending;
+  }
+  runtime_refresh_pending = refreshRuntimeCollections()
+    .catch((error) => {
+      state.error_message = error instanceof Error ? error.message : String(error);
+    })
+    .finally(() => {
+      runtime_refresh_pending = null;
+    });
+  return runtime_refresh_pending;
 }
 
 async function runWithRefresh<T>(work: () => Promise<T>): Promise<T> {
@@ -334,7 +362,20 @@ export const commenterStore = {
   state,
   async initialize() {
     await ensureEventSubscription();
-    return runWithRefresh(async () => undefined);
+    if (initialized) {
+      return;
+    }
+    if (initialization_pending) {
+      return initialization_pending;
+    }
+    initialization_pending = runWithRefresh(async () => undefined)
+      .then(() => {
+        initialized = true;
+      })
+      .finally(() => {
+        initialization_pending = null;
+      });
+    return initialization_pending;
   },
   async refresh() {
     return runWithRefresh(async () => undefined);
@@ -380,7 +421,7 @@ export const commenterStore = {
       .then((detail) => {
         state.selected_run_key = detail.run.run_key;
         applySelectedRunDetail(detail);
-        return refreshCollectionsQuiet();
+        return refreshRuntimeCollectionsQuiet();
       })
       .catch((error) => {
         state.error_message = error instanceof Error ? error.message : String(error);

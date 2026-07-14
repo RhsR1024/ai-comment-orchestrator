@@ -250,7 +250,7 @@ pub fn default_api_base_url() -> String {
 }
 
 pub fn default_api_model() -> String {
-    "glm-5.0".to_string()
+    "glm-5.1".to_string()
 }
 
 pub fn default_request_timeout_secs() -> i64 {
@@ -458,6 +458,7 @@ mod tests {
         assert_eq!(settings.default_max_files, 50);
         assert!(settings.allow_light_rewrite);
         assert_eq!(settings.json_handling_strategy.as_str(), "sidecar_only");
+        assert_eq!(settings.api_model, "glm-5.1");
     }
 
     #[test]
