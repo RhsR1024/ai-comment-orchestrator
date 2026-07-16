@@ -312,6 +312,20 @@ export const mockCommenterBackend = {
     return profile;
   },
 
+  async deleteProjectProfile(project_key: string): Promise<CommenterProjectProfileView> {
+    const database = loadDatabase();
+    const profile = database.profiles.find((entry) => entry.project_key === project_key);
+    if (!profile) {
+      throw new Error(`Unknown profile ${project_key}`);
+    }
+    if (Object.values(database.runs).some((detail) => detail.run.profile_key === project_key)) {
+      throw new Error('Cannot delete a project that is referenced by a run. Delete its runs first.');
+    }
+    database.profiles = database.profiles.filter((entry) => entry.project_key !== project_key);
+    saveDatabase(database);
+    return { ...profile };
+  },
+
   async enqueueRun(request: CommenterEnqueueRunRequest): Promise<CommenterRunHandle> {
     const database = loadDatabase();
     const profile = database.profiles.find((entry) => entry.project_key === request.profile_key);

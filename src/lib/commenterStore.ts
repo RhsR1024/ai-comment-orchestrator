@@ -4,6 +4,7 @@ import {
   applyEventToStreamSlices,
   applyEventsToStreamSlices,
   rebuildStreamSlices,
+  settleStreamSlicesForTerminalRun,
   type LiveStreamSlice
 } from './commenterStreamSlice';
 import type {
@@ -229,11 +230,19 @@ function applySelectedRunDetail(detail: CommenterRunDetail | null) {
     events: merged_events
   });
   mergeInitialExecutionLogs(merged_events);
-  state.live_streams = mergeLiveStreamSnapshots(
+  const merged_streams = mergeLiveStreamSnapshots(
     rebuildStreamSlices(detail.events),
     state.live_streams,
     detail.run.run_key
   );
+  state.live_streams = is_run_finished(detail.run.status)
+    ? settleStreamSlicesForTerminalRun(
+        merged_streams,
+        detail.run.run_key,
+        detail.run.finished_at ?? detail.run.updated_at,
+        detail.jobs
+      )
+    : merged_streams;
 }
 
 function hasActiveRun(): boolean {
@@ -387,6 +396,9 @@ export const commenterStore = {
   },
   async saveProfile(request: CommenterProjectProfileDraft) {
     return runWithRefresh(() => commenterApi.upsertProjectProfile(request));
+  },
+  async deleteProfile(project_key: string) {
+    return runWithRefresh(() => commenterApi.deleteProjectProfile(project_key));
   },
   async enqueueRun(request: CommenterEnqueueRunRequest) {
     return runWithRefresh(async () => {

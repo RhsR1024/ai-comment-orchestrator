@@ -62,6 +62,7 @@ The merge must:
 - return events in chronological order for detail timelines
 
 `applySelectedRunDetail()` must also keep newer live stream slices for the selected run when a refresh rebuilds slices from a stale backend detail.
+When a refreshed run is terminal, it must reconcile any legacy live slice still marked `streaming`: failed jobs become failed slices and every other stale active slice becomes completed. This fallback handles older persisted CodeBuddy events that omitted the stream anchor from their terminal event.
 
 High-frequency stream updates use this batch boundary:
 
@@ -75,6 +76,8 @@ applyEventsToStreamSlices(
 It clones the stream map at most once per animation-frame batch and preserves event order. Active-run polling requests only `listRuns`, `listReviewJobs`, and the selected `getRunDetail`, with one shared in-flight promise. A slow poll must not overlap the next 3-second tick; manual refresh still loads profiles/settings.
 
 Live stream text is a preview cache, not durable history. It retains at most four file slices with text and at most 512 KiB per slice. Backend detail polling contains structural events only; full completed text is fetched from candidate/original artifacts on demand.
+
+The presentation layer may reveal `LiveStreamSlice.text` progressively, but the store must always ingest complete chunk payloads immediately. Typewriter timers are component-local and must not be stored, persisted, or used to decide whether a job is complete. Completion comes only from structural backend state/events.
 
 **Component Contract**: `StreamContentPanel.vue` receives `streamLastChunkAt` from the selected `LiveStreamSlice`. If a file is in `streaming` status or has live text but no completed response event yet, the request detail summary and timeline must show `commenter.request.streaming` / `commenter.event.stream_chunk` instead of the idle request state.
 

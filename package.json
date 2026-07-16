@@ -8,7 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "check": "vue-tsc --noEmit && pnpm run smoke",
     "lint": "eslint .",
-    "smoke": "tsx src/lib/commenterApiShape.test.ts && tsx src/lib/commenterRoute.test.ts && tsx src/lib/commenterLocale.test.ts && tsx src/lib/commenterProfileDefaults.test.ts && tsx src/lib/commenterCredentialPanel.test.ts && tsx src/lib/settingsWorkspaceCleanup.test.ts && tsx src/lib/settingsWorkspaceEnhancements.test.ts && tsx src/lib/referenceStyleLayout.test.ts && tsx src/lib/commenterExecutionLog.test.ts && tsx src/lib/commenterFileLog.test.ts && tsx src/lib/commenterStoreEvents.test.ts && tsx src/lib/commenterStreamSlice.test.ts && tsx src/lib/commenterRunHeader.test.ts && tsx src/lib/commenterWorkspaceTree.test.ts && tsx src/lib/commenterStreamPanel.test.ts",
+    "smoke": "tsx src/lib/commenterApiShape.test.ts && tsx src/lib/commenterRoute.test.ts && tsx src/lib/commenterLocale.test.ts && tsx src/lib/commenterProfileDefaults.test.ts && tsx src/lib/commenterCredentialPanel.test.ts && tsx src/lib/settingsWorkspaceCleanup.test.ts && tsx src/lib/settingsWorkspaceEnhancements.test.ts && tsx src/lib/referenceStyleLayout.test.ts && tsx src/lib/commenterExecutionLog.test.ts && tsx src/lib/commenterFileLog.test.ts && tsx src/lib/commenterStoreEvents.test.ts && tsx src/lib/commenterStreamSlice.test.ts && tsx src/lib/commenterTypewriter.test.ts && tsx src/lib/commenterRunHeader.test.ts && tsx src/lib/commenterWorkspaceTree.test.ts && tsx src/lib/commenterStreamPanel.test.ts",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --no-bundle",

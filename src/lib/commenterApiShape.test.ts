@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { commenterApi, pickProjectRootPath, subscribeCommenterEvents } from './tauri';
 
 assert.equal(typeof commenterApi.enqueueRun, 'function');
+assert.equal(typeof commenterApi.deleteProjectProfile, 'function');
 assert.equal(typeof commenterApi.pauseRun, 'function');
 assert.equal(typeof commenterApi.deleteRun, 'function');
 assert.equal(typeof commenterApi.rollbackRun, 'function');

@@ -20,6 +20,14 @@ assert.match(settings_page_source, /workspaceMode === 'global'/, 'global mode br
 
 const profiles_panel_source = fs.readFileSync(profiles_panel, 'utf8');
 assert.match(profiles_panel_source, /profile-form-grid/, 'project profile fields should keep the established form grid');
+assert.match(profiles_panel_source, /v-if="is_creating"/, 'project profile form should only open after an explicit add action');
+assert.match(profiles_panel_source, /startCreatingProfile/, 'project profile list should expose an add-project action');
+assert.match(profiles_panel_source, /v-else-if="commenterStore\.state\.profiles\.length === 0"/, 'project profile list should expose a first-use empty state');
+assert.match(profiles_panel_source, /v-for="profile in commenterStore\.state\.profiles"/, 'existing profiles should remain visible in the default list view');
+assert.match(profiles_panel_source, /startEditingProfile/, 'existing profiles should expose an edit action');
+assert.match(profiles_panel_source, /deleteProfile/, 'existing profiles should expose a delete action');
+assert.match(profiles_panel_source, /editing_project_key\.value \?\? draft\.profile_name\.trim\(\)/, 'editing should preserve the immutable project key');
+assert.match(profiles_panel_source, /commenterStore\.deleteProfile/, 'project deletion should use the shared store refresh path');
 for (const field of ['api_base_url', 'api_model', 'request_timeout_secs']) {
   assert.match(profiles_panel_source, new RegExp(field), `${field} should remain in project profile settings`);
 }
@@ -30,6 +38,7 @@ assert.match(profiles_panel_source, /profile-save-feedback--error/, 'project pro
 const diff_panel_source = fs.readFileSync(diff_panel, 'utf8');
 assert.match(diff_panel_source, /defineExpose/, 'global settings panel should expose save/reset methods');
 assert.match(diff_panel_source, /api_bearer_token/, 'global API token should stay in app settings');
+assert.doesNotMatch(diff_panel_source, /request_mode/, 'global settings should expose only the single HTTP-compatible flow');
 assert.match(diff_panel_source, /credentials-status-pill/, 'global settings should render a verified-credential placeholder pill');
 assert.match(diff_panel_source, /props\.activeSection === 'api-credentials'/, 'global settings panel should filter the API section');
 assert.match(diff_panel_source, /props\.activeSection === 'about-settings'/, 'global settings panel should filter the About section');

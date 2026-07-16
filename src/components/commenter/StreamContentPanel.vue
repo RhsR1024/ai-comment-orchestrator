@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { commenterStore } from '../../lib/commenterStore';
+import { advanceTypewriterText, TYPEWRITER_FRAME_MS } from '../../lib/commenterTypewriter';
 import { commenterApi } from '../../lib/tauri';
 import type { CommenterEventPayload, CommenterJobStatus } from '../../lib/commenterTypes';
 import { use_messages } from '../../locales/messages';
@@ -26,9 +27,32 @@ const original_text = ref('');
 const original_error = ref<string | null>(null);
 const fetching_original = ref(false);
 const active_tab = ref<'diff' | 'stream' | 'original' | 'request'>('stream');
+const animated_live_text = ref('');
 let candidate_request_id = 0;
 let original_request_id = 0;
 let original_loaded_key: string | null = null;
+let typewriter_timer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelTypewriter() {
+  if (typewriter_timer !== null) {
+    clearTimeout(typewriter_timer);
+    typewriter_timer = null;
+  }
+}
+
+function runTypewriterFrame() {
+  typewriter_timer = null;
+  animated_live_text.value = advanceTypewriterText(animated_live_text.value, props.live_text);
+  if (animated_live_text.value !== props.live_text) {
+    scheduleTypewriter();
+  }
+}
+
+function scheduleTypewriter() {
+  if (typewriter_timer === null && animated_live_text.value !== props.live_text) {
+    typewriter_timer = setTimeout(runTypewriterFrame, TYPEWRITER_FRAME_MS);
+  }
+}
 
 const file_events = computed<CommenterEventPayload[]>(() => {
   const path = props.relative_path;
@@ -130,7 +154,9 @@ function format_time(at: number): string {
   return new Date(at).toLocaleTimeString();
 }
 
-const display_text = computed(() => (props.live_text.length > 0 ? props.live_text : fallback_text.value));
+const display_text = computed(() =>
+  props.live_text.length > 0 ? animated_live_text.value : fallback_text.value
+);
 
 const language_label = computed(() => {
   const path = props.relative_path ?? '';
@@ -258,6 +284,33 @@ async function maybeFetchOriginal() {
     }
   }
 }
+
+watch(
+  () => [props.mode, props.run_key, props.relative_path] as const,
+  () => {
+    cancelTypewriter();
+    animated_live_text.value = props.mode === 'live' ? '' : props.live_text;
+    scheduleTypewriter();
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.live_text,
+  (next) => {
+    if (props.mode !== 'live') {
+      cancelTypewriter();
+      animated_live_text.value = next;
+      return;
+    }
+    if (!next.startsWith(animated_live_text.value)) {
+      animated_live_text.value = '';
+    }
+    scheduleTypewriter();
+  }
+);
+
+onBeforeUnmount(cancelTypewriter);
 
 watch(
   () => [props.mode, props.run_key, props.relative_path, props.status, props.live_text.length] as const,

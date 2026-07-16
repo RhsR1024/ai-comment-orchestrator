@@ -53,7 +53,7 @@ Credential resolution rules in the backend:
 Verified Tencent endpoint example:
 
 ```text
-https://unvcoding.copilot.qq.com
+https://example.com
 ```
 
 ### Start the app in development

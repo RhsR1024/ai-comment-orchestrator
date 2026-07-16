@@ -33,6 +33,7 @@ use super::{
     rollback::{can_overwrite_for_rollback, RollbackGuard},
     scanner::{scan_project_tree, FileKind, ScannedFile, WriteStrategy},
     scheduler::recover_run_status,
+    telemetry::CodebuddyTelemetry,
     validate::{validate_candidate, FileValidationInput, ValidationDecision},
 };
 
@@ -44,6 +45,7 @@ const STREAM_EVENT_MAX_CHARS: usize = 1200;
 pub const COMMENTER_COMMAND_NAMES: &[&str] = &[
     "commenter_upsert_project_profile",
     "commenter_list_project_profiles",
+    "commenter_delete_project_profile",
     "commenter_enqueue_run",
     "commenter_list_runs",
     "commenter_get_run_detail",
@@ -234,6 +236,8 @@ struct StoredJob {
     candidate_content: Option<String>,
     before_hash: Option<String>,
     written_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    telemetry_context: Option<ChatCompletionsRequestContext>,
 }
 
 impl CommenterCommandSurface {
@@ -302,6 +306,31 @@ impl CommenterCommandSurface {
     pub fn list_project_profiles(&self) -> Result<Vec<CommenterProjectProfileView>, String> {
         let state = self.state.lock().map_err(|_| "state lock poisoned")?;
         Ok(state.profiles.values().cloned().collect())
+    }
+
+    pub fn delete_project_profile(
+        &self,
+        project_key: &str,
+    ) -> Result<CommenterProjectProfileView, String> {
+        let mut state = self.state.lock().map_err(|_| "state lock poisoned")?;
+        let profile = state
+            .profiles
+            .get(project_key)
+            .cloned()
+            .ok_or_else(|| format!("unknown profile: {project_key}"))?;
+        if state
+            .runs
+            .values()
+            .any(|stored_run| stored_run.run.profile_key == project_key)
+        {
+            return Err(
+                "cannot delete a project that is referenced by a run; delete its runs first"
+                    .to_string(),
+            );
+        }
+        state.profiles.remove(project_key);
+        persist_locked_state(&state)?;
+        Ok(profile)
     }
 
     pub fn list_dir(
@@ -647,6 +676,11 @@ impl CommenterCommandSurface {
     ) -> Result<CommenterRunDetail, String> {
         let mut state = self.state.lock().map_err(|_| "state lock poisoned")?;
         let data_root = state.data_root.clone();
+        let write_telemetry = state
+            .runs
+            .get(&request.run_key)
+            .and_then(|run| state.profiles.get(&run.run.profile_key))
+            .and_then(|profile| build_write_telemetry(profile, &state.app_settings).ok());
         let stored_run = state
             .runs
             .get_mut(&request.run_key)
@@ -675,11 +709,21 @@ impl CommenterCommandSurface {
         let relative_path = job.record.relative_path.clone();
         write_before_snapshot(&run_paths, &relative_path, &before_content, job)?;
         fs::write(&job.absolute_path, &candidate_content).map_err(|error| error.to_string())?;
+        if let Some((telemetry, context)) = &write_telemetry {
+            let context = job.telemetry_context.as_ref().unwrap_or(context);
+            telemetry.report_file_write(
+                context,
+                &relative_path,
+                &before_content,
+                &candidate_content,
+            );
+        }
         job.record.status = CommentJobStatus::Done;
         job.record.error_message = None;
         job.written_hash = Some(hash_content(&candidate_content));
         job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
         job.candidate_content = None;
+        job.telemetry_context = None;
         stored_run.run.updated_at = timestamp;
         push_event(
             &mut stored_run.events,
@@ -716,6 +760,7 @@ impl CommenterCommandSurface {
         };
         job.record.status = CommentJobStatus::Skipped;
         job.record.error_message = Some("Rejected during review".to_string());
+        job.telemetry_context = None;
         stored_run.run.updated_at = unix_timestamp_now();
         push_event(
             &mut stored_run.events,
@@ -755,6 +800,7 @@ impl CommenterCommandSurface {
             job.record.retry_count += 1;
             job.record.status = CommentJobStatus::Pending;
             job.record.error_message = None;
+            job.telemetry_context = None;
             stored_run.run.updated_at = unix_timestamp_now();
             push_event(
                 &mut stored_run.events,
@@ -1348,6 +1394,7 @@ fn build_stored_job(state: &mut CommenterState, file: ScannedFile) -> StoredJob 
         candidate_content: None,
         before_hash: None,
         written_hash: None,
+        telemetry_context: None,
     }
 }
 
@@ -1386,6 +1433,7 @@ enum JobOutcome {
         before_hash: String,
         candidate: String,
         source: String,
+        telemetry_context: ChatCompletionsRequestContext,
     },
     ValidationRejected {
         before_path: PathBuf,
@@ -1394,6 +1442,7 @@ enum JobOutcome {
         candidate: String,
         source: String,
         reason: String,
+        telemetry_context: ChatCompletionsRequestContext,
     },
     Failed(String),
 }
@@ -1417,10 +1466,11 @@ impl JobResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct GeneratedCandidate {
     result: Result<String, String>,
     events: Vec<CommenterEventPayload>,
+    write_telemetry: Option<(CodebuddyTelemetry, ChatCompletionsRequestContext)>,
 }
 
 async fn process_single_job_async(
@@ -1451,6 +1501,7 @@ async fn process_single_job_async(
 
     let generated = generate_candidate(action, &source, run_paths, app.as_ref()).await;
     let events = generated.events;
+    let write_telemetry = generated.write_telemetry;
     let candidate = match generated.result {
         Ok(value) => value,
         Err(error) => {
@@ -1498,6 +1549,11 @@ async fn process_single_job_async(
                         before_hash,
                         candidate,
                         source,
+                        telemetry_context: write_telemetry
+                            .as_ref()
+                            .expect("successful request telemetry")
+                            .1
+                            .clone(),
                     },
                     events,
                 }
@@ -1507,6 +1563,14 @@ async fn process_single_job_async(
                         outcome: JobOutcome::Failed(format!("write source failed: {error}")),
                         events,
                     };
+                }
+                if let Some((telemetry, context)) = &write_telemetry {
+                    telemetry.report_file_write(
+                        context,
+                        &action.relative_path,
+                        &source,
+                        &candidate,
+                    );
                 }
                 let written_hash = hash_content(&candidate);
                 JobResult {
@@ -1530,6 +1594,11 @@ async fn process_single_job_async(
                 candidate,
                 source,
                 reason,
+                telemetry_context: write_telemetry
+                    .as_ref()
+                    .expect("successful request telemetry")
+                    .1
+                    .clone(),
             },
             events,
         },
@@ -1551,6 +1620,7 @@ async fn generate_candidate(
             return GeneratedCandidate {
                 result: Err(format!("credential resolution failed: {error:?}")),
                 events: Vec::new(),
+                write_telemetry: None,
             }
         }
     };
@@ -1561,6 +1631,7 @@ async fn generate_candidate(
             return GeneratedCandidate {
                 result: Err(format!("credential resolution failed: {error:?}")),
                 events: Vec::new(),
+                write_telemetry: None,
             }
         }
     };
@@ -1614,8 +1685,13 @@ async fn generate_candidate(
         return GeneratedCandidate {
             result: Err(format!("write request artifact failed: {error}")),
             events: Vec::new(),
+            write_telemetry: None,
         };
     }
+    let telemetry =
+        CodebuddyTelemetry::new(&request.base_url, &request.bearer_token, &request.model);
+    telemetry.report_chat_start(&request.context, &request.user_prompt, &request.user_prompt);
+    let write_telemetry = Some((telemetry.clone(), request.context.clone()));
     let request_artifact_label = artifact_display_path(run_paths, &request_artifact_path);
     let response_artifact_path = artifact_output_path(
         &run_paths.response_root,
@@ -1652,11 +1728,17 @@ async fn generate_candidate(
         }
     })
     .await;
+    telemetry.report_chat_finish(
+        &write_telemetry.as_ref().expect("telemetry context").1,
+        &outcome.usage,
+        outcome.result.is_ok(),
+    );
     emit_buffered_stream_events(action, app, &mut stream_buffer);
     if let Err(error) = write_json_artifact(&response_artifact_path, &outcome.debug.response) {
         return GeneratedCandidate {
             result: Err(format!("write response artifact failed: {error}")),
             events,
+            write_telemetry,
         };
     }
 
@@ -1668,6 +1750,7 @@ async fn generate_candidate(
                     "{error} (response artifact: {response_artifact_label})"
                 )),
                 events,
+                write_telemetry,
             }
         }
     };
@@ -1695,12 +1778,36 @@ async fn generate_candidate(
         return GeneratedCandidate {
             result: Err("model returned empty content".to_string()),
             events,
+            write_telemetry,
         };
     }
     GeneratedCandidate {
         result: Ok(cleaned),
         events,
+        write_telemetry,
     }
+}
+
+fn build_write_telemetry(
+    profile: &CommenterProjectProfileView,
+    app_settings: &CommentAppSettings,
+) -> Result<(CodebuddyTelemetry, ChatCompletionsRequestContext), String> {
+    let bearer_token = resolve_bearer_token(app_settings)
+        .map_err(|error| format!("credential resolution failed: {error:?}"))?;
+    let base_url = if profile.settings.api_base_url.trim().is_empty() {
+        DEFAULT_API_BASE_URL
+    } else {
+        profile.settings.api_base_url.trim()
+    };
+    let model = if profile.settings.api_model.trim().is_empty() {
+        DEFAULT_API_MODEL
+    } else {
+        profile.settings.api_model.trim()
+    };
+    Ok((
+        CodebuddyTelemetry::new(base_url, &bearer_token, model),
+        ChatCompletionsRequestContext::new(base_url),
+    ))
 }
 
 fn job_event(
@@ -1841,11 +1948,13 @@ fn apply_job_outcome(
             before_hash,
             candidate: _candidate,
             source: _source,
+            telemetry_context,
         } => {
             job.record.before_artifact_path = Some(before_path.to_string_lossy().to_string());
             job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
             job.before_hash = Some(before_hash);
             job.candidate_content = None;
+            job.telemetry_context = Some(telemetry_context);
             job.record.status = CommentJobStatus::ReviewNeeded;
             Some(CommenterEventPayload {
                 kind: CommenterEventKind::ReviewRequested,
@@ -1863,11 +1972,13 @@ fn apply_job_outcome(
             candidate: _candidate,
             source: _source,
             reason,
+            telemetry_context,
         } => {
             job.record.before_artifact_path = Some(before_path.to_string_lossy().to_string());
             job.record.candidate_artifact_path = Some(candidate_path.to_string_lossy().to_string());
             job.before_hash = Some(before_hash);
             job.candidate_content = None;
+            job.telemetry_context = Some(telemetry_context);
             job.record.status = CommentJobStatus::ReviewNeeded;
             job.record.error_message = Some(reason.clone());
             Some(CommenterEventPayload {
@@ -2108,6 +2219,15 @@ pub fn commenter_list_project_profiles(
     surface: tauri::State<'_, CommenterCommandSurface>,
 ) -> Result<Vec<CommenterProjectProfileView>, String> {
     surface.list_project_profiles()
+}
+
+#[cfg(not(test))]
+#[tauri::command]
+pub fn commenter_delete_project_profile(
+    surface: tauri::State<'_, CommenterCommandSurface>,
+    project_key: String,
+) -> Result<CommenterProjectProfileView, String> {
+    surface.delete_project_profile(&project_key)
 }
 
 #[cfg(not(test))]
@@ -2744,6 +2864,48 @@ data: [DONE]\n\n"
         assert!(service.list_runs().expect("list runs").is_empty());
     }
 
+    #[test]
+    fn project_profile_delete_is_safe_for_run_references() {
+        let temp = tempdir().expect("tempdir");
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(project_root.join("src")).expect("src dir");
+        fs::write(
+            project_root.join("src/main.go"),
+            "package main\nfunc main() {}\n",
+        )
+        .expect("go");
+
+        let service = CommenterCommandSurface::new(temp.path().join(".commenter-data"));
+        service
+            .upsert_project_profile(draft(project_root.to_string_lossy().as_ref()))
+            .expect("profile");
+        let handle = service
+            .enqueue_run(CommenterEnqueueRunRequest {
+                profile_key: "demo".to_string(),
+                requested_by: Some("test".to_string()),
+                run_mode: CommentRunMode::Review,
+                max_workers: 2,
+                max_retries: 0,
+                max_files: 10,
+                allow_light_rewrite: true,
+                json_handling_strategy: JsonHandlingStrategy::SidecarOnly,
+            })
+            .expect("run");
+
+        let error = service
+            .delete_project_profile("demo")
+            .expect_err("referenced profile must remain");
+        assert!(error.contains("referenced by a run"));
+        service.delete_run(&handle.run_key).expect("delete run");
+        let deleted = service
+            .delete_project_profile("demo")
+            .expect("delete unreferenced profile");
+        assert_eq!(deleted.project_key, "demo");
+        assert!(service
+            .list_project_profiles()
+            .expect("profiles")
+            .is_empty());
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn start_run_keeps_stream_chunks_transient() {
         let temp = tempdir().expect("tempdir");
@@ -2955,7 +3117,7 @@ data: [DONE]\n\n"
                 |row| row.get(0),
             )
             .expect("schema version");
-        assert_eq!(version, "8");
+        assert_eq!(version, "9");
     }
 
     #[test]

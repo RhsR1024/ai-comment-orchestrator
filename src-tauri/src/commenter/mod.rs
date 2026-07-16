@@ -10,4 +10,5 @@ pub mod rollback;
 pub mod scanner;
 pub mod scheduler;
 pub mod sse;
+pub mod telemetry;
 pub mod validate;

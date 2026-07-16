@@ -24,6 +24,7 @@ assert.match(
   'request details should label streaming responses instead of showing idle request state'
 );
 assert.match(source, /streamLastChunkAt/, 'request details should receive live stream chunk timing');
+assert.match(source, /advanceTypewriterText/, 'live response text should use the bounded typewriter buffer');
 assert.match(source, /request_detail_events/, 'request details should render a merged timeline with live stream status');
 assert.match(source, /active_tab === 'diff'/, 'diff tab should render a content branch');
 assert.match(source, /active_tab === 'original'/, 'original tab should render a content branch');

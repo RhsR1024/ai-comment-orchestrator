@@ -7,7 +7,7 @@ use std::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures_util::StreamExt;
 use reqwest::{header::HeaderMap, Client, Url};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -27,17 +27,18 @@ const TEMPLATE_ACCEPT: &str = "*/*";
 const TEMPLATE_ACCEPT_LANGUAGE: &str = "*";
 const TEMPLATE_SEC_FETCH_MODE: &str = "cors";
 const TEMPLATE_ACCEPT_ENCODING: &str = "br, gzip, deflate";
-const TEMPLATE_IDE_TYPE: &str = "JetBrains";
-const TEMPLATE_IDE_NAME: &str = "JetBrainsGoLand";
-const TEMPLATE_IDE_VERSION: &str = "GO-253.29346.379";
-const TEMPLATE_PRODUCT_VERSION: &str = "4.2.17133064";
-const TEMPLATE_ENV_ID: &str = "production";
-const TEMPLATE_USER_ID: &str = "8bf9032d-e260-425a-b156-66316d141488";
-const TEMPLATE_ENTERPRISE_ID: &str = "unvcoding";
-const TEMPLATE_TENANT_ID: &str = "unvcoding";
-const TEMPLATE_DOMAIN: &str = "unvcoding.copilot.qq.com";
-const TEMPLATE_USER_AGENT: &str = "JetBrainsGoLand/GO-253.29346.379 unvcoding/4.2.17133064";
-const TEMPLATE_PRODUCT: &str = "Cloud-Hosted";
+pub(crate) const TEMPLATE_IDE_TYPE: &str = "JetBrains";
+pub(crate) const TEMPLATE_IDE_NAME: &str = "JetBrainsGoLand";
+pub(crate) const TEMPLATE_IDE_VERSION: &str = "GO-253.29346.379";
+pub(crate) const TEMPLATE_PRODUCT_VERSION: &str = "4.2.17133064";
+pub(crate) const TEMPLATE_ENV_ID: &str = "production";
+pub(crate) const TEMPLATE_USER_ID: &str = "8bf9032d-e260-425a-b156-66316d141488";
+pub(crate) const TEMPLATE_ENTERPRISE_ID: &str = "unvcoding";
+pub(crate) const TEMPLATE_TENANT_ID: &str = "unvcoding";
+pub(crate) const TEMPLATE_DOMAIN: &str = "unvcoding.copilot.qq.com";
+pub(crate) const TEMPLATE_USER_AGENT: &str =
+    "JetBrainsGoLand/GO-253.29346.379 unvcoding/4.2.17133064";
+pub(crate) const TEMPLATE_PRODUCT: &str = "Cloud-Hosted";
 const TEMPLATE_REASONING_EFFORT: &str = "medium";
 const TEMPLATE_REASONING_SUMMARY: &str = "auto";
 
@@ -48,7 +49,7 @@ pub fn chat_completions_endpoint(base_url: &str) -> String {
     format!("{trimmed}{CHAT_COMPLETIONS_PATH}")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionsRequestContext {
     pub host: String,
     pub conversation_id: String,
@@ -123,21 +124,33 @@ pub struct ChatCompletionsDebugTrace {
 pub struct ChatCompletionsCallOutcome {
     pub result: Result<String, String>,
     pub debug: ChatCompletionsDebugTrace,
+    pub usage: ChatUsage,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChatUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+    pub cached_write_tokens: u64,
+    pub cached_miss_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default)]
 struct AccumulatedSseStream {
     content: String,
     raw_body: String,
     error: Option<String>,
+    usage: ChatUsage,
 }
 
-#[derive(Debug, Default, Clone)]
-struct TokenDerivedHeaders {
-    user_id: Option<String>,
-    enterprise_id: Option<String>,
-    tenant_id: Option<String>,
-    domain: Option<String>,
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TokenDerivedHeaders {
+    pub(crate) user_id: Option<String>,
+    pub(crate) enterprise_id: Option<String>,
+    pub(crate) tenant_id: Option<String>,
+    pub(crate) domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,15 +167,15 @@ struct RequestMessage<'a> {
 
 #[derive(Debug, Serialize)]
 #[allow(non_snake_case)]
-struct ChatCompletionsRequestBody<'a> {
+struct HttpCompatibleRequestBody<'a> {
     model: &'a str,
     max_tokens: u32,
     temperature: f64,
     reasoningEffort: &'static str,
     reasoning_summary: &'static str,
     reasoning_effort: &'static str,
-    stream: bool,
     messages: [RequestMessage<'a>; 2],
+    stream: bool,
 }
 
 pub fn build_chat_completions_request_debug(
@@ -204,6 +217,7 @@ where
         return ChatCompletionsCallOutcome {
             result: Err("bearer token is empty".to_string()),
             debug,
+            usage: ChatUsage::default(),
         };
     }
 
@@ -222,6 +236,7 @@ where
             return ChatCompletionsCallOutcome {
                 result: Err(error),
                 debug,
+                usage: ChatUsage::default(),
             }
         }
     };
@@ -236,6 +251,7 @@ where
             return ChatCompletionsCallOutcome {
                 result: Err(format!("http request failed: {error}")),
                 debug,
+                usage: ChatUsage::default(),
             }
         }
     };
@@ -253,23 +269,24 @@ where
                 status, truncated
             )),
             debug,
+            usage: ChatUsage::default(),
         };
     }
 
     let stream_idle_timeout = Duration::from_secs(
         request
             .timeout_secs
-            .max(30)
-            .min(DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
+            .clamp(30, DEFAULT_STREAM_IDLE_TIMEOUT_SECS),
     );
     let stream = accumulate_sse_stream(response, observer, stream_idle_timeout).await;
-    debug.response.body = stream.raw_body;
+    debug.response.body = stream.raw_body.clone();
     ChatCompletionsCallOutcome {
         result: match stream.error {
             Some(error) => Err(error),
             None => Ok(stream.content),
         },
         debug,
+        usage: stream.usage,
     }
 }
 
@@ -284,19 +301,19 @@ fn initialize_debug_trace(request: &ChatCompletionsRequest) -> ChatCompletionsDe
     }
 }
 
+#[cfg(test)]
 fn build_request_body(request: &ChatCompletionsRequest) -> Value {
-    serde_json::to_value(build_request_body_payload(request)).unwrap_or(Value::Null)
+    serde_json::from_str(&build_request_body_text(request)).unwrap_or(Value::Null)
 }
 
-fn build_request_body_payload(request: &ChatCompletionsRequest) -> ChatCompletionsRequestBody<'_> {
-    ChatCompletionsRequestBody {
+fn build_request_body_text(request: &ChatCompletionsRequest) -> String {
+    serde_json::to_string(&HttpCompatibleRequestBody {
         model: &request.model,
         max_tokens: request.max_tokens,
         temperature: round_temperature(request.temperature),
         reasoningEffort: TEMPLATE_REASONING_EFFORT,
         reasoning_summary: TEMPLATE_REASONING_SUMMARY,
         reasoning_effort: TEMPLATE_REASONING_EFFORT,
-        stream: true,
         messages: [
             RequestMessage {
                 role: "system",
@@ -307,12 +324,9 @@ fn build_request_body_payload(request: &ChatCompletionsRequest) -> ChatCompletio
                 content: &request.user_prompt,
             },
         ],
-    }
-}
-
-fn build_request_body_text(request: &ChatCompletionsRequest) -> String {
-    serde_json::to_string(&build_request_body_payload(request))
-        .unwrap_or_else(|_| build_request_body(request).to_string())
+        stream: true,
+    })
+    .unwrap_or_else(|_| "{}".to_string())
 }
 
 fn request_headers(
@@ -408,7 +422,7 @@ fn request_headers(
         header("accept-language", TEMPLATE_ACCEPT_LANGUAGE),
         header("sec-fetch-mode", TEMPLATE_SEC_FETCH_MODE),
         header("accept-encoding", TEMPLATE_ACCEPT_ENCODING),
-        header("content-length", body_text.as_bytes().len().to_string()),
+        header("content-length", body_text.len().to_string()),
     ]
 }
 
@@ -466,7 +480,7 @@ fn round_temperature(temperature: f32) -> f64 {
     ((temperature as f64) * 1000.0).round() / 1000.0
 }
 
-fn derive_headers_from_bearer_token(token: &str) -> TokenDerivedHeaders {
+pub(crate) fn derive_headers_from_bearer_token(token: &str) -> TokenDerivedHeaders {
     let Some(payload) = decode_jwt_payload(token) else {
         return TokenDerivedHeaders::default();
     };
@@ -486,7 +500,8 @@ fn derive_headers_from_bearer_token(token: &str) -> TokenDerivedHeaders {
             ],
         ),
         tenant_id: claim_string(&payload, &["tenantId", "tenant_id", "tenant", "tenant-id"]),
-        domain: claim_string(&payload, &["domain", "host", "aud"]),
+        // JWT `aud` is commonly "account" and is not the CodeBuddy X-Domain value.
+        domain: claim_string(&payload, &["domain", "host"]),
     }
 }
 
@@ -584,6 +599,7 @@ where
     let mut buffer: Vec<u8> = Vec::new();
     let mut content = String::new();
     let mut raw_body = String::new();
+    let mut usage = ChatUsage::default();
 
     'stream: loop {
         let next_chunk = match tokio::time::timeout(idle_timeout, stream.next()).await {
@@ -592,6 +608,7 @@ where
                 return AccumulatedSseStream {
                     content,
                     raw_body,
+                    usage,
                     error: Some(format!(
                         "sse stream idle timeout after {} seconds",
                         idle_timeout.as_secs()
@@ -608,6 +625,7 @@ where
                 return AccumulatedSseStream {
                     content,
                     raw_body,
+                    usage,
                     error: Some(format!("sse stream error: {error}")),
                 }
             }
@@ -622,7 +640,7 @@ where
             if is_sse_done_line(line) {
                 break 'stream;
             }
-            if let Some(piece) = parse_sse_line(line).unwrap_or(None) {
+            if let Some(piece) = parse_sse_line(line, &mut usage).unwrap_or(None) {
                 observer(&piece);
                 content.push_str(&piece);
             }
@@ -631,7 +649,9 @@ where
 
     if !buffer.is_empty() {
         let line = String::from_utf8_lossy(&buffer);
-        if let Some(piece) = parse_sse_line(line.trim_end_matches(['\r', '\n'])).unwrap_or(None) {
+        if let Some(piece) =
+            parse_sse_line(line.trim_end_matches(['\r', '\n']), &mut usage).unwrap_or(None)
+        {
             observer(&piece);
             content.push_str(&piece);
         }
@@ -641,10 +661,11 @@ where
         content,
         raw_body,
         error: None,
+        usage,
     }
 }
 
-fn parse_sse_line(line: &str) -> Result<Option<String>, String> {
+fn parse_sse_line(line: &str, usage: &mut ChatUsage) -> Result<Option<String>, String> {
     let Some(payload) = line
         .strip_prefix("data: ")
         .or_else(|| line.strip_prefix("data:"))
@@ -660,6 +681,38 @@ fn parse_sse_line(line: &str) -> Result<Option<String>, String> {
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
+
+    if let Some(raw_usage) = value.get("usage") {
+        usage.input_tokens = raw_usage
+            .get("prompt_tokens")
+            .or_else(|| raw_usage.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(usage.input_tokens);
+        usage.output_tokens = raw_usage
+            .get("completion_tokens")
+            .or_else(|| raw_usage.get("output_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(usage.output_tokens);
+        usage.total_tokens = raw_usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| usage.input_tokens.saturating_add(usage.output_tokens));
+        let prompt_details = raw_usage.get("prompt_tokens_details");
+        usage.cached_tokens = raw_usage
+            .get("cached_tokens")
+            .or_else(|| prompt_details.and_then(|details| details.get("cached_tokens")))
+            .and_then(Value::as_u64)
+            .unwrap_or(usage.cached_tokens);
+        usage.cached_write_tokens = raw_usage
+            .get("cached_write_tokens")
+            .or_else(|| prompt_details.and_then(|details| details.get("cache_write_tokens")))
+            .and_then(Value::as_u64)
+            .unwrap_or(usage.cached_write_tokens);
+        usage.cached_miss_tokens = raw_usage
+            .get("cached_miss_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| usage.input_tokens.saturating_sub(usage.cached_tokens));
+    }
 
     if let Some(delta) = value
         .pointer("/choices/0/delta/content")
@@ -749,20 +802,42 @@ mod tests {
 
     #[test]
     fn parse_sse_line_extracts_content_and_ignores_reasoning() {
+        let mut usage = ChatUsage::default();
         assert_eq!(
-            parse_sse_line(r#"data: {"choices":[{"delta":{"content":"你好"}}]}"#).unwrap(),
+            parse_sse_line(
+                r#"data: {"choices":[{"delta":{"content":"你好"}}]}"#,
+                &mut usage,
+            )
+            .unwrap(),
             Some("你好".to_string())
         );
         assert_eq!(
-            parse_sse_line(r#"data: {"choices":[{"delta":{"reasoning_content":"忽略"}}]}"#)
-                .unwrap(),
+            parse_sse_line(
+                r#"data: {"choices":[{"delta":{"reasoning_content":"忽略"}}]}"#,
+                &mut usage,
+            )
+            .unwrap(),
             None
         );
-        assert_eq!(parse_sse_line("data: [DONE]").unwrap(), None);
+        assert_eq!(parse_sse_line("data: [DONE]", &mut usage).unwrap(), None);
         assert!(is_sse_done_line("data: [DONE]"));
         assert!(is_sse_done_line("data:[DONE]"));
         assert!(!is_sse_done_line("data: {}"));
-        assert_eq!(parse_sse_line("event: ping").unwrap(), None);
+        assert_eq!(parse_sse_line("event: ping", &mut usage).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_sse_line_captures_final_usage() {
+        let mut usage = ChatUsage::default();
+        let line = r#"data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":8,"total_tokens":128,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":2}}}"#;
+
+        assert_eq!(parse_sse_line(line, &mut usage).expect("usage line"), None);
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.total_tokens, 128);
+        assert_eq!(usage.cached_tokens, 100);
+        assert_eq!(usage.cached_write_tokens, 2);
+        assert_eq!(usage.cached_miss_tokens, 20);
     }
 
     #[tokio::test]
@@ -912,6 +987,30 @@ mod tests {
     }
 
     #[test]
+    fn http_compatible_body_matches_codebuddy_top_level_order() {
+        let request = sample_request();
+        let body = build_request_body_text(&request);
+        let expected_order = [
+            "\"model\"",
+            "\"max_tokens\"",
+            "\"temperature\"",
+            "\"reasoningEffort\"",
+            "\"reasoning_summary\"",
+            "\"reasoning_effort\"",
+            "\"messages\"",
+            "\"stream\"",
+        ];
+        let positions: Vec<usize> = expected_order
+            .iter()
+            .map(|field| body.find(field).expect("compatible field"))
+            .collect();
+
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!body.contains("\"tools\""));
+        assert!(!body.contains("\"tool_choice\""));
+    }
+
+    #[test]
     fn request_debug_prefers_jwt_claim_headers_over_template_samples() {
         let mut request = sample_request();
         request.bearer_token = fake_jwt(json!({
@@ -928,5 +1027,16 @@ mod tests {
         assert_eq!(headers.get("X-Tenant-Id"), Some(&"tenant-456"));
         assert_eq!(headers.get("X-Enterprise-Id"), Some(&"enterprise-789"));
         assert_eq!(headers.get("X-Domain"), Some(&"custom.example.com"));
+    }
+
+    #[test]
+    fn request_debug_does_not_treat_jwt_audience_as_domain() {
+        let mut request = sample_request();
+        request.bearer_token = fake_jwt(json!({"aud": "account"}));
+
+        let debug = build_chat_completions_request_debug(&request);
+        let headers = header_map(&debug.headers);
+
+        assert_eq!(headers.get("X-Domain"), Some(&TEMPLATE_DOMAIN));
     }
 }

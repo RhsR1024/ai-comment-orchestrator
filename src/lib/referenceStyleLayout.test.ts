@@ -33,8 +33,8 @@ for (const token of [
 }
 
 assert.match(app, /app-shell--reference/, 'app shell should use the reference shell class');
-assert.match(sidebar, /sidebar-status-card/, 'sidebar should expose bottom API status');
-assert.match(sidebar, /sidebar-status-dot/, 'sidebar should render a colored API status dot');
+assert.doesNotMatch(sidebar, /sidebar-status-card/, 'sidebar should omit the unused API status card');
+assert.doesNotMatch(sidebar, /sidebar-status-dot/, 'sidebar should omit the unused API status dot');
 assert.match(sidebar, /go\('\/global'\)/, 'sidebar should link to the new /global route');
 assert.match(sidebar, /go\('\/review'\)/, 'sidebar should expose the review queue route');
 assert.match(page, /run-reference-shell/, 'run workspace should use the reference run shell');
@@ -49,6 +49,8 @@ assert.doesNotMatch(run_detail, /active_left_tab === 'events'/, 'events tab must
 assert.doesNotMatch(run_header, /linear-gradient\(135deg/, 'run header must not keep decorative gradient');
 assert.match(queue_runs_table, /queue-rail-form/, 'run workspace rail must expose a compact profile picker');
 assert.match(queue_runs_table, /enqueueAndStartRun/, 'run workspace rail must offer one-click enqueue and start');
+assert.match(queue_runs_table, /max_files:\s*0/, 'new runs should process the complete scanned project');
+assert.doesNotMatch(queue_runs_table, /v-model\.number="form\.max_files"/, 'run forms should not expose a file cap');
 assert.match(
   queue_runs_table,
   /t\('commenter\.queue\.emptyProfiles'\)/,

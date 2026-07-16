@@ -22,5 +22,6 @@ assert.equal(draft.settings.api_base_url, 'https://unvcoding.copilot.qq.com');
 assert.equal(draft.settings.api_model, 'glm-5.1');
 assert.equal('api_bearer_token' in draft.settings, false);
 assert.equal(draft.settings.request_timeout_secs, 600);
+assert.equal(draft.settings.default_max_files, 0, 'new profiles should process the whole project');
 
 console.log('commenter profile defaults PASSED');

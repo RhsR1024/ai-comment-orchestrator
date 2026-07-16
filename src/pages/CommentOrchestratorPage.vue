@@ -9,17 +9,12 @@ import ReviewJobsPanel from '../components/commenter/ReviewJobsPanel.vue';
 import RunHeaderStrip from '../components/commenter/RunHeaderStrip.vue';
 import RunDetailPanel from '../components/commenter/RunDetailPanel.vue';
 import { commenterStore } from '../lib/commenterStore';
+import type { CommenterGlobalSettingsSection } from '../lib/commenterTypes';
 import { use_messages } from '../locales/messages';
 
 const { t } = use_messages();
 
 type WorkspaceMode = 'project' | 'run' | 'review' | 'global';
-type GlobalSettingsSection =
-  | 'api-credentials'
-  | 'concurrency-quota'
-  | 'diff-tool'
-  | 'storage-logs'
-  | 'about-settings';
 const props = withDefaults(
   defineProps<{ workspaceMode?: WorkspaceMode }>(),
   {
@@ -31,7 +26,7 @@ const diffSettingsPanel = ref<{
   saveSettings: () => Promise<void>;
   resetSettings: () => void;
 } | null>(null);
-const activeGlobalSection = ref<GlobalSettingsSection>('api-credentials');
+const activeGlobalSection = ref<CommenterGlobalSettingsSection>('api-credentials');
 
 async function saveGlobalSettings() {
   await diffSettingsPanel.value?.saveSettings();

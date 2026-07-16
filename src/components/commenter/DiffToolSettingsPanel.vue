@@ -4,21 +4,15 @@ import { Eye, EyeOff, FolderOpen, Save } from 'lucide-vue-next';
 
 import { commenterStore } from '../../lib/commenterStore';
 import { commenterApi } from '../../lib/tauri';
+import type { CommenterGlobalSettingsSection } from '../../lib/commenterTypes';
 import { use_messages } from '../../locales/messages';
 
 const { t } = use_messages();
 
-type GlobalSettingsSection =
-  | 'api-credentials'
-  | 'concurrency-quota'
-  | 'diff-tool'
-  | 'storage-logs'
-  | 'about-settings';
-
 const props = withDefaults(
   defineProps<{
     variant?: 'panel' | 'reference';
-    activeSection?: GlobalSettingsSection;
+    activeSection?: CommenterGlobalSettingsSection;
   }>(),
   {
     variant: 'panel',

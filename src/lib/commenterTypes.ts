@@ -29,6 +29,12 @@ export type CommenterJobStatus =
 
 export type CommenterRunMode = 'auto' | 'review';
 export type CommenterJsonHandlingStrategy = 'sidecar_only';
+export type CommenterGlobalSettingsSection =
+  | 'api-credentials'
+  | 'concurrency-quota'
+  | 'diff-tool'
+  | 'storage-logs'
+  | 'about-settings';
 export type CommenterEventLevel = 'info' | 'warn' | 'error';
 export type CommenterEventKind =
   | 'run_queued'

@@ -78,6 +78,14 @@ export const commenterApi = {
     }
     return mockCommenterBackend.upsertProjectProfile(request);
   },
+  deleteProjectProfile: async (project_key: string): Promise<CommenterProjectProfileView> => {
+    if (hasTauriRuntime()) {
+      return tauriInvoke<CommenterProjectProfileView>('commenter_delete_project_profile', {
+        projectKey: project_key
+      });
+    }
+    return mockCommenterBackend.deleteProjectProfile(project_key);
+  },
   enqueueRun: async (request: CommenterEnqueueRunRequest): Promise<CommenterRunHandle> => {
     if (hasTauriRuntime()) {
       return tauriInvoke<CommenterRunHandle>('commenter_enqueue_run', { request });

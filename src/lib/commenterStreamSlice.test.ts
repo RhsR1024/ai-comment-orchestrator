@@ -4,11 +4,12 @@ import {
   applyEventToStreamSlices,
   applyEventsToStreamSlices,
   rebuildStreamSlices,
+  settleStreamSlicesForTerminalRun,
   STREAM_SLICE_TEXT_CAP_BYTES,
   STREAM_SLICE_TEXT_KEEP_COUNT,
   type LiveStreamSlice
 } from './commenterStreamSlice';
-import type { CommenterEventPayload } from './commenterTypes';
+import type { CommenterEventPayload, CommenterJobRecord } from './commenterTypes';
 
 function event(
   kind: CommenterEventPayload['kind'],
@@ -28,6 +29,21 @@ function event(
 
 function key(path: string): string {
   return `r1|${path}`;
+}
+
+function job(relative_path: string, status: CommenterJobRecord['status'], error_message: string | null = null): CommenterJobRecord {
+  return {
+    id: 1,
+    relative_path,
+    status,
+    language_hint: null,
+    write_strategy: 'annotate_in_place',
+    retry_count: 0,
+    error_message,
+    before_artifact_path: null,
+    candidate_artifact_path: null,
+    sidecar_artifact_path: null
+  };
 }
 
 // 1. request_started creates an empty slice in 'streaming'
@@ -122,6 +138,21 @@ function key(path: string): string {
   assert.equal(slice.text, 'one two');
   assert.equal(slice.status, 'completed');
   assert.notEqual(next, initial);
+}
+
+// Terminal run refreshes settle legacy CodeBuddy slices whose terminal event omitted a path.
+{
+  let map = new Map<string, LiveStreamSlice>();
+  map = applyEventToStreamSlices(map, event('request_started', 'done.ts', 10));
+  map = applyEventToStreamSlices(map, event('stream_chunk', 'done.ts', 20, 'no changes'));
+  map = applyEventToStreamSlices(map, event('request_started', 'failed.ts', 11));
+  map = settleStreamSlicesForTerminalRun(map, 'r1', 50, [
+    job('done.ts', 'skipped'),
+    job('failed.ts', 'failed', 'agent failed')
+  ]);
+  assert.equal(map.get(key('done.ts'))!.status, 'completed');
+  assert.equal(map.get(key('failed.ts'))!.status, 'failed');
+  assert.equal(map.get(key('failed.ts'))!.error, 'agent failed');
 }
 
 console.log('commenter stream slice PASSED');

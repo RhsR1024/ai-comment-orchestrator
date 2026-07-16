@@ -210,7 +210,7 @@ export function createDefaultCommenterProjectProfileDraft(): CommenterProjectPro
       default_run_mode: 'review',
       default_max_workers: 2,
       default_max_retries: 1,
-      default_max_files: 3,
+      default_max_files: 0,
       allow_light_rewrite: true,
       json_handling_strategy: 'sidecar_only',
       api_base_url: 'https://unvcoding.copilot.qq.com',

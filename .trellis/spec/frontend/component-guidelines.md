@@ -172,6 +172,68 @@ type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 <span v-if="saveState === 'error'" role="alert">{{ saveError }}</span>
 ```
 
+## Scenario: Project Profile List And Explicit Creation
+
+### 1. Scope / Trigger
+
+- Use this when changing `ProjectProfilesPanel.vue` or the project configuration workspace entry state.
+
+### 2. Signatures
+
+```typescript
+const is_creating = ref(false);
+function startCreatingProfile(): void;
+function cancelCreatingProfile(): void;
+```
+
+### 3. Contracts
+
+- Project configuration opens on the existing-profile list, never directly on the creation form.
+- The list header exposes an explicit add-project action and the empty state repeats that action.
+- Starting creation resets the draft and transient save feedback before showing the form.
+- Cancelling creation returns to the list without persisting the draft.
+- A successful save returns to the refreshed list and keeps visible success feedback; a failed save keeps the form open with an adjacent `role="alert"` message.
+- Every existing project card exposes edit and delete actions. Edit reuses the complete form, preserves the original immutable `project_key`, and allows the display name and settings to change.
+- Delete requires confirmation and shows backend errors in the list. Profiles referenced by runs remain visible until those runs are deleted.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Profiles exist | Cards and project count are visible; creation form is hidden |
+| No profiles exist | Empty guidance and add-project action are visible; creation form is hidden |
+| User clicks add | A fresh complete profile form replaces the list |
+| Save succeeds | List returns and success status is visible |
+| Save fails | Form remains open and backend error is visible |
+
+### 5. Good/Base/Bad Cases
+
+- Good: returning users immediately see all configured projects and deliberately enter creation mode.
+- Base: first-time users see an informative empty state with a primary add action.
+- Bad: route entry renders a large blank profile form before users can inspect existing projects.
+
+### 6. Tests Required
+
+- `src/lib/settingsWorkspaceEnhancements.test.ts` asserts the form is gated by `is_creating`, the add action exists, and both empty and populated list branches remain wired.
+- `pnpm run build` validates the conditional Vue template and typed draft reset.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```vue
+<div class="profile-form-grid">...</div>
+<div v-for="profile in profiles" :key="profile.project_key">...</div>
+```
+
+#### Correct
+
+```vue
+<div v-if="is_creating" class="profile-form-grid">...</div>
+<div v-else-if="profiles.length === 0">...</div>
+<div v-else v-for="profile in profiles" :key="profile.project_key">...</div>
+```
+
 ## Scenario: Global Settings Section Navigation
 
 ### 1. Scope / Trigger
@@ -181,7 +243,7 @@ type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 ### 2. Signatures
 
 ```typescript
-type GlobalSettingsSection =
+export type CommenterGlobalSettingsSection =
   | 'api-credentials'
   | 'concurrency-quota'
   | 'diff-tool'
@@ -195,6 +257,7 @@ type GlobalSettingsSection =
 - Exactly one matching settings section is visible in the reference workspace.
 - Switching sections preserves the component-level form draft until the user saves or resets it.
 - The selected item has a visible active state and exposes its selection state to assistive technology.
+- Request execution has no selector: every run uses the single CodeBuddy-compatible HTTP flow.
 
 ### 4. Validation & Error Matrix
 
@@ -283,4 +346,68 @@ const throughput_label = computed(() => completed_jobs / elapsed_minutes);
 
 ```typescript
 // Render progress and outcome counts only; do not create a per-second timer.
+```
+
+## Scenario: Whole-Project Run Controls And Typewriter Stream Presentation
+
+### 1. Scope / Trigger
+
+- Use this when changing `Sidebar.vue`, `QueueRunsTable.vue`, `ProjectProfilesPanel.vue`, or `StreamContentPanel.vue`.
+- The UI must distinguish durable stream data from its transient presentation and must not expose controls that silently truncate a project run.
+
+### 2. Signatures
+
+```typescript
+export function advanceTypewriterText(current: string, target: string): string;
+
+interface CommenterEnqueueRunRequest {
+  max_files: number; // 0 means unlimited
+}
+```
+
+### 3. Contracts
+
+- The sidebar contains navigation only; it must not render the display-only API/worker-capacity card.
+- New runs always send `max_files: 0`. Project creation and editing also normalize `settings.default_max_files` to `0`; legacy DTO fields remain for backward compatibility but have no visible editor.
+- `commenterStore` and `LiveStreamSlice.text` retain the exact ordered stream text. The typewriter effect is component-local presentation state and must never delay event ingestion or alter persisted text.
+- In live-follow mode, `StreamContentPanel` advances toward the latest target every 16 ms. Small backlogs reveal one character per frame; larger backlogs use bounded adaptive steps so the UI catches up without freezing.
+- Switching run/file, entering locked mode, or receiving a non-prefix replacement cancels/reset the active presentation buffer so text from two files cannot be mixed.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Upstream sends one large SSE delta | Store receives it immediately; panel reveals it progressively |
+| More deltas arrive while animation is behind | Target grows; character order is preserved and catch-up remains bounded |
+| User selects a historical file | Locked preview displays the available text immediately |
+| User starts a new run | Request contains `max_files: 0`; all scanned files remain eligible |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a large upstream delta appears progressively while completion and scheduling use the real backend event state.
+- Base: a completed/historical file opens immediately without replaying a long animation.
+- Bad: split every backend delta into per-character Tauri events, infer completion from response wording, or expose a positive default file cap.
+
+### 6. Tests Required
+
+- `src/lib/commenterTypewriter.test.ts` asserts ordered progressive reveal, bounded catch-up, and replacement behavior.
+- `src/lib/commenterStreamPanel.test.ts` asserts the stream panel uses the shared typewriter helper.
+- `src/lib/referenceStyleLayout.test.ts` asserts the sidebar card and max-file inputs are absent and new runs use `max_files: 0`.
+- `pnpm run build` validates the Vue watchers, timers, and templates.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+for (const character of delta) {
+  emit('commenter://state', character);
+}
+```
+
+#### Correct
+
+```typescript
+// Ingest full backend deltas immediately; animate only the rendered prefix.
+animated.value = advanceTypewriterText(animated.value, liveSlice.text);
 ```

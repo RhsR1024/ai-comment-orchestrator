@@ -22,7 +22,7 @@ const form = reactive<CommenterEnqueueRunRequest>({
   run_mode: 'review',
   max_workers: 2,
   max_retries: 1,
-  max_files: 2,
+  max_files: 0,
   allow_light_rewrite: true,
   json_handling_strategy: 'sidecar_only'
 });
@@ -41,7 +41,7 @@ function applyProfileDefaults(profile_key: string) {
   form.run_mode = profile.settings.default_run_mode;
   form.max_workers = profile.settings.default_max_workers;
   form.max_retries = profile.settings.default_max_retries;
-  form.max_files = profile.settings.default_max_files;
+  form.max_files = 0;
   form.allow_light_rewrite = profile.settings.allow_light_rewrite;
   form.json_handling_strategy = profile.settings.json_handling_strategy;
 }
@@ -79,7 +79,7 @@ function buildRunRequest(): CommenterEnqueueRunRequest {
     run_mode: form.run_mode,
     max_workers: form.max_workers,
     max_retries: form.max_retries,
-    max_files: form.max_files,
+    max_files: 0,
     allow_light_rewrite: form.allow_light_rewrite,
     json_handling_strategy: form.json_handling_strategy
   };
@@ -147,7 +147,7 @@ function canDeleteRun(run: CommenterRunRecord): boolean {
             </select>
           </label>
 
-          <div class="queue-rail-settings">
+          <div class="queue-rail-settings queue-rail-settings--single">
             <label class="queue-rail-field">
               <span>{{ t('commenter.queue.runMode') }}</span>
               <select
@@ -161,16 +161,6 @@ function canDeleteRun(run: CommenterRunRecord): boolean {
                   {{ t('commenter.profile.auto') }}
                 </option>
               </select>
-            </label>
-            <label class="queue-rail-field">
-              <span>{{ t('commenter.queue.maxFiles') }}</span>
-              <input
-                v-model.number="form.max_files"
-                class="queue-rail-control queue-rail-control--number"
-                type="number"
-                min="1"
-                inputmode="numeric"
-              >
             </label>
           </div>
 
@@ -246,15 +236,6 @@ function canDeleteRun(run: CommenterRunRecord): boolean {
             v-model.number="form.max_retries"
             type="number"
             min="0"
-            inputmode="numeric"
-          >
-        </div>
-        <div class="field field-span-2">
-          <label>{{ t('commenter.queue.maxFiles') }}</label>
-          <input
-            v-model.number="form.max_files"
-            type="number"
-            min="1"
             inputmode="numeric"
           >
         </div>
@@ -516,6 +497,10 @@ function canDeleteRun(run: CommenterRunRecord): boolean {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(86px, 0.42fr);
   gap: 8px;
+}
+
+.queue-rail-settings--single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .queue-rail-run-button {

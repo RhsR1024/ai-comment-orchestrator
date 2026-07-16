@@ -1,4 +1,4 @@
-import type { CommenterEventPayload } from './commenterTypes';
+import type { CommenterEventPayload, CommenterJobRecord } from './commenterTypes';
 
 export const STREAM_SLICE_TEXT_KEEP_COUNT = 4;
 export const STREAM_SLICE_TEXT_CAP_BYTES = 512 * 1024;
@@ -125,4 +125,29 @@ export function rebuildStreamSlices(events: CommenterEventPayload[]): Map<string
     new Map<string, LiveStreamSlice>(),
     [...events].sort((left, right) => left.created_at - right.created_at)
   );
+}
+
+export function settleStreamSlicesForTerminalRun(
+  current: Map<string, LiveStreamSlice>,
+  run_key: string,
+  finished_at: number,
+  jobs: CommenterJobRecord[]
+): Map<string, LiveStreamSlice> {
+  const prefix = `${run_key}|`;
+  const jobs_by_path = new Map(jobs.map((job) => [job.relative_path, job]));
+  let next: Map<string, LiveStreamSlice> | null = null;
+  for (const [key, slice] of current) {
+    if (!key.startsWith(prefix) || slice.status !== 'streaming') {
+      continue;
+    }
+    next ??= new Map(current);
+    const job = jobs_by_path.get(key.slice(prefix.length));
+    next.set(key, {
+      ...slice,
+      status: job?.status === 'failed' ? 'failed' : 'completed',
+      error: job?.status === 'failed' ? job.error_message ?? slice.error : slice.error,
+      last_chunk_at: Math.max(slice.last_chunk_at, finished_at)
+    });
+  }
+  return next ?? current;
 }

@@ -6,7 +6,7 @@ use super::models::{
     COMMENT_CREDENTIAL_SOURCE_KIND_VALUES, COMMENT_JOB_STATUS_VALUES, COMMENT_RUN_STATUS_VALUES,
 };
 
-const COMMENTER_SCHEMA_VERSION: i64 = 8;
+const COMMENTER_SCHEMA_VERSION: i64 = 9;
 pub const COMMENTER_DB_FILE_NAME: &str = "app.db";
 
 pub fn open_in_memory() -> SqlResult<Connection> {
@@ -697,6 +697,7 @@ mod tests {
         let app_settings_columns =
             list_column_names(&conn, "commenter_app_settings").expect("app settings columns");
         assert!(app_settings_columns.contains(&"api_bearer_token".to_string()));
+        assert!(!app_settings_columns.contains(&"request_mode".to_string()));
 
         let credential_profile_columns = list_column_names(&conn, "commenter_credential_profiles")
             .expect("credential profile columns");

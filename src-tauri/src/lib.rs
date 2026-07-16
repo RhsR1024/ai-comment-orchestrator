@@ -29,6 +29,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commenter::commands::commenter_upsert_project_profile,
             commenter::commands::commenter_list_project_profiles,
+            commenter::commands::commenter_delete_project_profile,
             commenter::commands::commenter_enqueue_run,
             commenter::commands::commenter_list_runs,
             commenter::commands::commenter_get_run_detail,

@@ -165,4 +165,29 @@ mod tests {
             vec![CommentJobStatus::Pending, CommentJobStatus::ReviewNeeded]
         );
     }
+
+    #[test]
+    fn restart_requeues_only_inflight_jobs_and_preserves_terminal_jobs() {
+        let state = recover_run_status(
+            CommentRunStatus::Running,
+            vec![
+                CommentJobStatus::Done,
+                CommentJobStatus::ReviewNeeded,
+                CommentJobStatus::Skipped,
+                CommentJobStatus::Failed,
+                CommentJobStatus::Requesting,
+            ],
+        );
+        assert_eq!(state.run_status, CommentRunStatus::Paused);
+        assert_eq!(
+            state.job_statuses,
+            vec![
+                CommentJobStatus::Done,
+                CommentJobStatus::ReviewNeeded,
+                CommentJobStatus::Skipped,
+                CommentJobStatus::Failed,
+                CommentJobStatus::Pending,
+            ]
+        );
+    }
 }

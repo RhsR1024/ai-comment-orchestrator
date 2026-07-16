@@ -17,22 +17,6 @@ const run_attention_count = computed(
     commenterStore.state.runs.filter((run) => !run.finished_at).length
 );
 
-const has_token = computed(() =>
-  Boolean(commenterStore.state.app_settings?.api_bearer_token.trim())
-);
-const api_status_label = computed(() =>
-  has_token.value ? t('sidebar.apiOnline') : t('sidebar.apiMissing')
-);
-const concurrency_used = computed(
-  () => commenterStore.state.runs.filter((run) => !run.finished_at).length
-);
-const concurrency_max = computed(
-  () => commenterStore.state.app_settings?.api_concurrency_limit ?? 0
-);
-const capacity_label = computed(() =>
-  t('sidebar.capacity', { used: concurrency_used.value, max: concurrency_max.value })
-);
-
 function is_active(path: string) {
   return route.path === path;
 }
@@ -90,18 +74,6 @@ function go(path: string) {
       </button>
     </nav>
 
-    <div class="sidebar-spacer" />
-
-    <div class="sidebar-status-card">
-      <div class="sidebar-status-line">
-        <span
-          class="sidebar-status-dot"
-          :class="has_token ? 'sidebar-status-dot--online' : 'sidebar-status-dot--offline'"
-        />
-        <strong>{{ api_status_label }}</strong>
-      </div>
-      <p>{{ capacity_label }}</p>
-    </div>
   </aside>
 </template>
 
@@ -193,40 +165,4 @@ function go(path: string) {
   color: var(--aco-yellow);
 }
 
-.sidebar-spacer {
-  flex: 1;
-}
-
-.sidebar-status-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border: 1px solid var(--aco-border);
-  border-radius: 8px;
-  background: var(--aco-surface-2);
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--aco-muted);
-}
-
-.sidebar-status-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--aco-text);
-}
-
-.sidebar-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-}
-
-.sidebar-status-dot--online {
-  background: var(--aco-green);
-}
-
-.sidebar-status-dot--offline {
-  background: var(--aco-red);
-}
 </style>
